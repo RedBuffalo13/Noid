@@ -23,8 +23,7 @@ separate relay service to run.
 
 **Interim stable — `noid_stable_2610` (2026-10-27).** Verified live:
 bidirectional Windows ↔ VPS message delivery with persisted E2EE
-history; 328 tests green. Android rebuild matrix is next. Full report:
-[`docs/audit2510/12_prekey_recovery_followup.md`](docs/audit2510/12_prekey_recovery_followup.md)
+history; 328 tests green. Android rebuild matrix is next. 
 
 ## Manual / Руководство (EN + RU)
 
@@ -35,6 +34,15 @@ history; 328 tests green. Android rebuild matrix is next. Full report:
 | Installation & setup | [INSTALLATION_EN.md](docs/manual/INSTALLATION_EN.md) | [INSTALLATION_RU.md](docs/manual/INSTALLATION_RU.md) |
 | Manual index | [docs/manual/README.md](docs/manual/README.md) | same |
 | Graphics | [banner.svg](docs/manual/assets/banner.svg) · [architecture.svg](docs/manual/assets/architecture.svg) | same |
+
+## Downloads
+
+| Platform | Package | Notes |
+|----------|---------|-------|
+| Windows (x64) | [noid-windows-x64-setup.exe](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-windows-x64-setup.exe) | NSIS installer — recommended |
+| Windows (x64) | [noid-windows-x64.msi](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-windows-x64.msi) | MSI package |
+| Linux (x86_64) | [noid-linux-x86_64](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-linux-x86_64) | Standalone binary — `chmod +x` |
+| Android (arm64) | [noid-android-arm64.apk](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-android-arm64.apk) | Sideload APK (debug-signed) |
 
 ## Quick start
 
