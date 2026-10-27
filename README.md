@@ -21,9 +21,17 @@ separate relay service to run.
 
 ## Status
 
-**Interim stable — `noid_stable_2610` (2026-10-27).** Verified live:
-bidirectional Windows ↔ VPS message delivery with persisted E2EE
-history; 328 tests green. Android rebuild matrix is next. 
+**Interim stable — `noid_stable_2610` (2026-10-27).**
+
+✅ **Stable:** Windows and Linux builds — verified live bidirectional
+delivery, persisted E2EE history, 328 tests green.
+
+⚠️ **Android:** the build works and is sideloadable, but has known issues
+(lifecycle, background delivery) — active work in progress. Treat the
+APK as experimental.
+
+**Roadmap:** SOCKS5/HTTP proxy support, file transfer polish, Android
+background reliability, further stability improvements.
 
 ## Manual / Руководство (EN + RU)
 
