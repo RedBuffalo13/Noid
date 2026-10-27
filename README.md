@@ -39,10 +39,10 @@ history; 328 tests green. Android rebuild matrix is next.
 
 | Platform | Package | Notes |
 |----------|---------|-------|
-| Windows (x64) | [noid-windows-x64-setup.exe](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-windows-x64-setup.exe) | NSIS installer — recommended |
-| Windows (x64) | [noid-windows-x64.msi](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-windows-x64.msi) | MSI package |
-| Linux (x86_64) | [noid-linux-x86_64](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-linux-x86_64) | Standalone binary — `chmod +x` |
-| Android (arm64) | [noid-android-arm64.apk](https://raw.githubusercontent.com/RedBuffalo13/Noid/main/distribs/noid-android-arm64.apk) | Sideload APK (debug-signed) |
+| Windows (x64) | [noid-windows-x64-setup.exe](https://github.com/RedBuffalo13/Noid/releases/download/v0.1.0-interim/noid-windows-x64-setup.exe) | NSIS installer — recommended. [All releases](https://github.com/RedBuffalo13/Noid/releases) |
+| Windows (x64) | [noid-windows-x64.msi](https://github.com/RedBuffalo13/Noid/releases/download/v0.1.0-interim/noid-windows-x64.msi) | MSI package |
+| Linux (x86_64) | [noid-linux-x86_64](https://github.com/RedBuffalo13/Noid/releases/download/v0.1.0-interim/noid-linux-x86_64) | Standalone binary — `chmod +x` |
+| Android (arm64) | [noid-android-arm64.apk](https://github.com/RedBuffalo13/Noid/releases/download/v0.1.0-interim/noid-android-arm64.apk) | Sideload APK (debug-signed) |
 
 ## Quick start
 
