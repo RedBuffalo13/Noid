@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="560" viewBox="0 0 1100 560" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="1100" height="560" fill="#0a0a0b" rx="16"/>
+  <text x="40" y="48" font-size="26" font-weight="700" fill="#e8e8ec">Noid — one binary, every role</text>
+  <g stroke="#3a3a44" stroke-width="2">
+    <line x1="200" y1="280" x2="550" y2="130"/>
+    <line x1="200" y1="280" x2="550" y2="430"/>
+    <line x1="900" y1="280" x2="550" y2="130"/>
+    <line x1="900" y1="280" x2="550" y2="430"/>
+  </g>
+  <g stroke="#8b5cf6" stroke-width="2" fill="none" stroke-dasharray="6 5">
+    <path d="M550 130 C 700 90, 750 90, 900 240" />
+    <path d="M200 280 C 330 340, 400 380, 550 430" />
+  </g>
+  <g>
+    <rect x="80" y="210" width="240" height="140" rx="14" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="105" y="250" font-size="20" font-weight="700" fill="#e8e8ec">Windows client</text>
+    <text x="105" y="282" font-size="14" fill="#9a9aa5">GUI + libp2p node</text>
+    <text x="105" y="306" font-size="14" fill="#9a9aa5">SQLite (AES-256-GCM)</text>
+    <text x="105" y="330" font-size="14" fill="#9a9aa5">PIN + KillPin</text>
+    <rect x="430" y="60" width="240" height="140" rx="14" fill="#121216" stroke="#10b981" stroke-width="2"/>
+    <text x="455" y="100" font-size="20" font-weight="700" fill="#e8e8ec">Android client</text>
+    <text x="455" y="132" font-size="14" fill="#9a9aa5">Same Rust core (JNI)</text>
+    <text x="455" y="156" font-size="14" fill="#9a9aa5">FGS + WorkManager</text>
+    <rect x="430" y="360" width="240" height="140" rx="14" fill="#121216" stroke="#10b981" stroke-width="2"/>
+    <text x="455" y="400" font-size="20" font-weight="700" fill="#e8e8ec">VPS / Linux node</text>
+    <text x="455" y="432" font-size="14" fill="#9a9aa5">relay + mailbox + DHT</text>
+    <text x="455" y="456" font-size="14" fill="#9a9aa5">kad Server mode</text>
+    <rect x="780" y="210" width="240" height="140" rx="14" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+    <text x="805" y="250" font-size="20" font-weight="700" fill="#e8e8ec">Any Noid peer</text>
+    <text x="805" y="282" font-size="14" fill="#9a9aa5">Every node can relay</text>
+    <text x="805" y="306" font-size="14" fill="#9a9aa5">and store mailboxes</text>
+    <rect x="470" y="215" width="160" height="130" rx="70" fill="#17171f" stroke="url(#g)" stroke-width="3"/>
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
+    <text x="497" y="272" font-size="16" fill="#e8e8ec">Kademlia</text>
+    <text x="502" y="294" font-size="16" fill="#e8e8ec">DHT</text>
+    <text x="490" y="316" font-size="12" fill="#9a9aa5">usernames · prekeys · mailbox</text>
+  </g>
+  <text x="40" y="530" font-size="14" fill="#6b6b75">Direct Noise-encrypted transports: QUIC · TCP · WebSocket — fallback: /p2p-circuit relay paths (dashed).</text>
+</svg>

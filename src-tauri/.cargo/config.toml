@@ -1,0 +1,5 @@
+# jobs = 1 limits rustc parallelism — workaround for OOM/linker failures
+# observed on the Windows dev machine during Android cross-builds.
+# Remove or raise if you have enough RAM; it makes local builds slower.
+[build]
+jobs = 1

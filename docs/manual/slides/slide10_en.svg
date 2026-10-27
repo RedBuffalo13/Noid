@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
+<rect width="1280" height="720" fill="#0a0a0b"/>
+<rect x="40" y="40" width="1200" height="640" rx="20" fill="#121216"/>
+<text x="120" y="90" font-family="Segoe UI,Arial" font-size="18" fill="#9a9aa5">Noid Messenger · 10/10 · EN</text>
+<text x="1160" y="90" text-anchor="end" font-family="Segoe UI,Arial" font-size="18" fill="#8b5cf6">noid</text>
+<text x="120" y="120" font-family="Segoe UI,Arial" font-size="44" font-weight="700" fill="#e8e8ec">Messaging that belongs to you</text>
+<text x="120" y="202" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Noid — your correspondence, your keys, your network.</text>
+<text x="120" y="236" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Decentralization as a principle.</text>
+<circle cx="1020" cy="380" r="150" fill="none" stroke="url(#g)" stroke-width="4"/>
+<circle cx="1020" cy="380" r="85" fill="none" stroke="url(#g)" stroke-width="7"/><path d="M945 380 h40 l10 -25 14 50 10 -25 h40" fill="none" stroke="#e8e8ec" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="120" y="640" width="200" height="6" rx="3" fill="url(#g)"/>
+</svg>

@@ -1,0 +1,101 @@
+[package]
+name = "noid"
+version = "0.1.0"
+description = "Noid Messenger"
+authors = ["amissa_domo"]
+edition = "2021"
+
+[workspace]
+members = []
+
+[lib]
+name = "noid_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-log = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1.0"
+tokio = { version = "1", features = ["full"] }
+libp2p = { version = "0.54", features = [
+    "tcp",
+    "dns",
+    "websocket",
+    "noise",
+    "yamux",
+    "kad",
+    "gossipsub",
+    "identify",
+    "ping",
+    "mdns",
+    "relay",
+    "dcutr",
+    "autonat",
+    "upnp",
+    "request-response",
+    "quic",
+    "tokio",
+    "macros",
+    "json",
+    "serde",
+] }
+# Direct dep so `void::Void` is nameable for the connection-limits
+# behaviour's event variant (already transitive via libp2p-swarm).
+void = "1"
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "chrono",
+    "migrate",
+] }
+argon2 = { version = "0.5", features = ["std"] }
+aes-gcm = "0.10"
+rand = "0.8"
+futures = "0.3"
+dirs = "5.0"
+zeroize = { version = "1.7", features = ["derive"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4", "serde"] }
+anyhow = "1.0"
+env_logger = "0.11"
+log = "0.4"
+regex = "1"
+
+# DHT encryption
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+rpassword = "7.3.1"
+hex = "0.4.3"
+hmac = "0.12"
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+# Vendored libp2p-tcp: `PortUse::Reuse` dials bind the outbound socket to our
+# own listen port. On Windows SO_REUSEADDR only tolerates that while no
+# established connection holds the port — every subsequent dial then fails
+# with WSAEADDRINUSE (os error 10048). Behaviour-internal dials (Kademlia,
+# gossipsub, DCUtR, request-response) always emit Reuse and cannot be
+# overridden, so the vendored `local_dial_addr` returns None on Windows:
+# reuse-bind is never attempted, dials get ephemeral ports, and DCUtR
+# degrades to relayed connections on that platform.
+[patch.crates-io]
+libp2p-tcp = { path = "../vendor/libp2p-tcp" }

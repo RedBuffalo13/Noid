@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
+<rect width="1280" height="720" fill="#0a0a0b"/>
+<rect x="40" y="40" width="1200" height="640" rx="20" fill="#121216"/>
+<text x="120" y="90" font-family="Segoe UI,Arial" font-size="18" fill="#9a9aa5">Noid Messenger · 05/10 · RU</text>
+<text x="1160" y="90" text-anchor="end" font-family="Segoe UI,Arial" font-size="18" fill="#8b5cf6">noid</text>
+<text x="120" y="120" font-family="Segoe UI,Arial" font-size="44" font-weight="700" fill="#e8e8ec">Пиры находят друг друга через DHT</text>
+<text x="120" y="202" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Kademlia: имена, подписанные prekey-бандлы, указатели mailbox.</text>
+<text x="120" y="236" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Инвайт-код — и вы на связи.</text>
+<circle cx="1020" cy="380" r="150" fill="none" stroke="url(#g)" stroke-width="4"/>
+<circle cx="950" cy="320" r="16" fill="#8b5cf6"/><circle cx="1090" cy="320" r="16" fill="#10b981"/><circle cx="950" cy="440" r="16" fill="#10b981"/><circle cx="1090" cy="440" r="16" fill="#8b5cf6"/><circle cx="1020" cy="380" r="18" fill="#e8e8ec"/><g stroke="#9a9aa5" stroke-width="3"><line x1="964" y1="330" x2="1005" y2="370"/><line x1="1076" y1="330" x2="1035" y2="370"/><line x1="964" y1="430" x2="1005" y2="392"/><line x1="1076" y1="430" x2="1035" y2="392"/></g>
+<rect x="120" y="640" width="200" height="6" rx="3" fill="url(#g)"/>
+</svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
+<rect width="1280" height="720" fill="#0a0a0b"/>
+<rect x="40" y="40" width="1200" height="640" rx="20" fill="#121216"/>
+<text x="120" y="90" font-family="Segoe UI,Arial" font-size="18" fill="#9a9aa5">Noid Messenger · 08/10 · EN</text>
+<text x="1160" y="90" text-anchor="end" font-family="Segoe UI,Arial" font-size="18" fill="#8b5cf6">noid</text>
+<text x="120" y="120" font-family="Segoe UI,Arial" font-size="44" font-weight="700" fill="#e8e8ec">Interim stable — October 2026</text>
+<text x="120" y="202" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Live Windows ↔ VPS delivery: sessions, E2EE, history, outbox. 328</text>
+<text x="120" y="236" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">tests. Android next.</text>
+<circle cx="1020" cy="380" r="150" fill="none" stroke="url(#g)" stroke-width="4"/>
+<g transform="translate(925,300)"><rect width="24" height="24" rx="5" fill="none" stroke="#10b981" stroke-width="4"/><path d="M5 12 l5 6 12 -14" fill="none" stroke="#10b981" stroke-width="4" stroke-linecap="round"/></g><rect x="965" y="307" width="150" height="10" rx="5" fill="#8b5cf6" opacity="0.8"/><g transform="translate(925,370)"><rect width="24" height="24" rx="5" fill="none" stroke="#10b981" stroke-width="4"/><path d="M5 12 l5 6 12 -14" fill="none" stroke="#10b981" stroke-width="4" stroke-linecap="round"/></g><rect x="965" y="377" width="150" height="10" rx="5" fill="#8b5cf6" opacity="0.8"/><g transform="translate(925,440)"><rect width="24" height="24" rx="5" fill="none" stroke="#9a9aa5" stroke-width="4"/></g><rect x="965" y="447" width="150" height="10" rx="5" fill="#8b5cf6" opacity="0.35"/>
+<rect x="120" y="640" width="200" height="6" rx="3" fill="url(#g)"/>
+</svg>

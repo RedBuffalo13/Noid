@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
+<rect width="1280" height="720" fill="#0a0a0b"/>
+<rect x="40" y="40" width="1200" height="640" rx="20" fill="#121216"/>
+<text x="120" y="90" font-family="Segoe UI,Arial" font-size="18" fill="#9a9aa5">Noid Messenger · 06/10 · RU</text>
+<text x="1160" y="90" text-anchor="end" font-family="Segoe UI,Arial" font-size="18" fill="#8b5cf6">noid</text>
+<text x="120" y="120" font-family="Segoe UI,Arial" font-size="44" font-weight="700" fill="#e8e8ec">Офлайн? Не проблема</text>
+<text x="120" y="202" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">Шифрованные конверты ждут на mailbox-узле — сообщения</text>
+<text x="120" y="236" font-family="Segoe UI,Arial" font-size="26" fill="#9a9aa5">переживают NAT и недели офлайна.</text>
+<circle cx="1020" cy="380" r="150" fill="none" stroke="url(#g)" stroke-width="4"/>
+<rect x="955" y="335" width="130" height="90" rx="10" fill="none" stroke="#10b981" stroke-width="5"/><path d="M955 335 l65 45 65 -45" fill="none" stroke="#8b5cf6" stroke-width="5"/>
+<rect x="120" y="640" width="200" height="6" rx="3" fill="url(#g)"/>
+</svg>
