@@ -75,11 +75,10 @@ connection-stability remediation and this documentation were developed
 with **Devin** ([devin.ai](https://devin.ai)) — thank you to the Devin
 team.
 
-## Donate
+## Cooperation
 
-If You liked it - you are free to donate
+I'm ready for co-development. Bring an ideas. Just want to do it full-work
 
-ETH,BSC etc - 0x666a7C97Ec665dE1A16Bf3e700F929C2B8D8527a
 
 
 ## License
