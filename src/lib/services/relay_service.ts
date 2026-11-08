@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { NodeRole, PrivacyMode, RelayConfig, RelayStatus } from "$lib/relay";
+import type { NodeRole, PrivacyMode, RelayConfig, RelayStatus } from "#lib/relay";
 
 /** Persisted relay configuration (role, privacy, limits). */
 export async function getRelayConfig(): Promise<RelayConfig> {

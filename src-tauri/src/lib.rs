@@ -297,6 +297,11 @@ pub struct AppState {
     /// publish, retry workers) compare their captured epoch and abort rather
     /// than writing stale identity material into a re-logged session.
     pub login_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// P3: network-layer generation bumped on every Tor/mode reconfigure
+    /// that recreates the P2P node — deliberately separate from
+    /// `login_epoch` (a mode change must NOT wipe identity, contacts or
+    /// ratchet state).
+    pub network_generation: Arc<std::sync::atomic::AtomicU64>,
     /// App log directory (tauri-plugin-log target) — wiped by KillPin so
     /// no message ids / peer ids survive in noid.log.
     pub app_log_dir: PathBuf,
@@ -310,6 +315,10 @@ pub struct AppState {
     /// abandoned transfers.
     pub file_inbox:
         Arc<Mutex<HashMap<String, crate::file_inbox::FileInboxEntry>>>,
+    /// Embedded Tor lifecycle handle: identity/status/supervisor. Reports
+    /// `Unsupported` when built without `embedded-tor` or under
+    /// `NOID_DISABLE_TOR=1`; never starts Tor without consent.
+    pub tor: crate::p2p::tor::handle::TorHandle,
 }
 
 /// A ratchet message we could not decrypt yet — kept for post-login retry.
@@ -359,6 +368,7 @@ pub async fn ensure_peer_connection(state: &AppState, peer_id: &str) -> Result<(
 
 /// Set the P2P gate desired-state, bumping `seq` unconditionally.
 pub fn gate_set(tx: &tokio::sync::watch::Sender<P2PGate>, open: bool) {
+    log::info!("gate_set(open={})", open);
     tx.send_modify(|g| {
         g.open = open;
         g.seq = g.seq.wrapping_add(1);
@@ -506,6 +516,15 @@ pub fn run() {
                         .unwrap_or(log::LevelFilter::Info),
                 )
                 .level_for("sqlx", log::LevelFilter::Warn)
+                // B6: default log name is the crate name — "noid_lib.log" —
+                // which confuses log collection/support tooling. Name the
+                // file after the product instead.
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("noid".to_string()),
+                    }),
+                ])
                 .max_file_size(2_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(2))
                 // Privacy: strip IPs and shorten PeerIds in every log line.
@@ -563,9 +582,11 @@ pub fn run() {
                 dht_cipher: std::sync::Mutex::new(None),
                 p2p_start_tx,
                 login_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                network_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 app_log_dir,
                 connected_peers: Arc::new(Mutex::new(std::collections::HashSet::new())),
                 file_inbox: Arc::new(Mutex::new(HashMap::new())),
+                tor: crate::p2p::tor::handle::TorHandle::new(app_data_dir.join("tor")),
             };
 
             app.manage(state);
@@ -611,6 +632,32 @@ pub fn run() {
             let my_id_state = handle.state::<AppState>().my_id.clone();
             let app_data_dir_clone = app_data_dir.clone();
             let mut p2p_gate_rx = p2p_start_rx;
+
+            // Live Tor status → UI: forward every supervisor snapshot as a
+            // `tor-status` event so settings/main-screen indicators update
+            // without polling. The snapshot is enriched with the persisted
+            // relay flags (the supervisor doesn't carry them — the config
+            // file does), so toggle state stays consistent everywhere.
+            {
+                let handle2 = app.handle().clone();
+                let cfg_path = app_data_dir.join("tor").join("tor_config.json");
+                tauri::async_runtime::spawn(async move {
+                    let mut rx = handle2.state::<AppState>().inner().tor.status_watch();
+                    loop {
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                        let mut s = rx.borrow().clone();
+                        if let Some(cfg) =
+                            crate::p2p::tor::config::load(&cfg_path).ok()
+                        {
+                            s.relay_enabled = cfg.onion_relay_enabled;
+                            s.allow_metered_relay = cfg.allow_metered_relay;
+                        }
+                        safe_emit(&handle2, "tor-status", s);
+                    }
+                });
+            }
             // tauri::async_runtime::spawn — setup() runs on the main
             // thread with NO ambient Tokio runtime (tokio::spawn panics
             // there — crashes Android on startup).
@@ -725,7 +772,10 @@ pub fn run() {
                     Err(e) => log::error!("dht_cipher lock poisoned on startup: {}", e),
                 }
 
-                match P2PNode::new_with_keys(&app_data_dir_clone, local_key, dht_cipher, master_key).await {
+                // Onion transport hookup: when a Tor generation is running
+                // (consent+mode), the node's swarm gets a TorTransport.
+                let tor_ref = handle.state::<AppState>().inner().tor.clone();
+                match P2PNode::new_with_keys(&app_data_dir_clone, local_key, dht_cipher, master_key, Some(tor_ref)).await {
                     Err(e) => {
                         // Surface the real cause — the previous code dropped it,
                         // leaving a generic "P2P not initialized" in the UI while
@@ -2448,7 +2498,13 @@ pub fn run() {
             commands::get_network_snapshot,
             commands::get_pending_message_ids,
             commands::get_relay_status,
+            commands::get_tor_status,
+            commands::set_tor_mode,
+            commands::set_tor_relay,
             commands::get_relay_config,
+            commands::get_proxy_config,
+            commands::set_proxy_config,
+            commands::test_proxy,
             commands::set_node_role,
             commands::set_privacy_mode,
             commands::send_contact_request,

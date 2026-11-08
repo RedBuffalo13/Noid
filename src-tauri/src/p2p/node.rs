@@ -104,8 +104,13 @@ pub struct P2PNode {
     pub relay_config: RelayConfig,
     /// Current NAT reachability as measured by AutoNAT/UPnP.
     pub(crate) nat_status: NatStatus,
+    /// Platform-adaptive behavior policy (Mobile/Desktop/Headless).
+    pub(crate) profile: crate::p2p::profile::NodeProfile,
     /// Confirmed public external addresses.
     pub(crate) external_addrs: Vec<Multiaddr>,
+    /// Our own `/onion3/<host>:4020` listen addr when the Tor generation is
+    /// up — included in the signed `EndpointAdvertise` sent on connect.
+    pub(crate) own_onion_addr: Option<Multiaddr>,
     /// Our `/p2p-circuit` addresses obtained via relay reservations.
     pub(crate) relayed_addrs: Vec<Multiaddr>,
     /// F17: the relay our published mailbox record currently points at —
@@ -239,6 +244,19 @@ pub struct P2PNode {
     /// Canonical addr → `Instant` until which it must not be re-learned.
     /// `None`-style permanent marks use `Instant::now() + 24h`.
     pub(crate) dead_addrs: std::collections::HashMap<String, std::time::Instant>,
+    /// B5: last handled `NetworkChanged` — Android ConnectivityManager can
+    /// flap several times a minute; each flap drops every addr + every
+    /// non-QUIC conn. Bursts are coalesced into one handler run.
+    pub(crate) last_network_change: Option<std::time::Instant>,
+    /// A debounced `NetworkChanged` is waiting for the coalesce tick.
+    pub(crate) pending_network_change: bool,
+    /// Tor lifecycle owner — MUST be held for the node's lifetime: the
+    /// supervisor's `Running` (onion service + rend accept loop) lives in
+    /// its `Inner`, and dropping the last handle tears the whole Tor
+    /// generation down while the client survives in `client_slot` — a
+    /// half-dead state (service gone, guards still up).
+    #[allow(dead_code)]
+    pub(crate) tor: Option<crate::p2p::tor::handle::TorHandle>,
 }
 
 impl P2PNode {
@@ -248,7 +266,7 @@ impl P2PNode {
     pub async fn new(data_dir: &std::path::Path) -> Result<Self> {
         let config = RelayConfig::load(data_dir);
         let local_key = libp2p::identity::Keypair::generate_ed25519();
-        Self::with_config(data_dir, config, local_key, DHTCipher::new(), None).await
+        Self::with_config(data_dir, config, local_key, DHTCipher::new(), None, None).await
     }
 
     /// Ephemeral relay node for tests — fresh random keys.
@@ -259,22 +277,24 @@ impl P2PNode {
             config.listen_port = p;
         }
         let local_key = libp2p::identity::Keypair::generate_ed25519();
-        Self::with_config(data_dir, config, local_key, DHTCipher::new(), None).await
+        Self::with_config(data_dir, config, local_key, DHTCipher::new(), None, None).await
     }
 
     /// Production node — takes identity keys that were decrypted from the
     /// encrypted key store (NOIDKEY1 envelope) after a successful login, plus
     /// the PIN-derived master key used to field-encrypt mailbox.db and the
     /// peer cache. Key material is never read from or written to disk here
-    /// in plaintext.
+    /// in plaintext. `tor` (when Some) hooks the onion transport into the
+    /// swarm — the node then dials `/onion3/` addrs via Tor.
     pub async fn new_with_keys(
         data_dir: &std::path::Path,
         local_key: libp2p::identity::Keypair,
         dht_cipher: DHTCipher,
         master_key: [u8; 32],
+        tor: Option<crate::p2p::tor::handle::TorHandle>,
     ) -> Result<Self> {
         let config = RelayConfig::load(data_dir);
-        Self::with_config(data_dir, config, local_key, dht_cipher, Some(master_key)).await
+        Self::with_config(data_dir, config, local_key, dht_cipher, Some(master_key), tor).await
     }
 
     /// Production headless relay — same key handling as `new_with_keys`,
@@ -285,13 +305,14 @@ impl P2PNode {
         dht_cipher: DHTCipher,
         port: Option<u16>,
         master_key: [u8; 32],
+        tor: Option<crate::p2p::tor::handle::TorHandle>,
     ) -> Result<Self> {
         let mut config = RelayConfig::load(data_dir);
         config.role = NodeRole::Relay;
         if let Some(p) = port {
             config.listen_port = p;
         }
-        Self::with_config(data_dir, config, local_key, dht_cipher, Some(master_key)).await
+        Self::with_config(data_dir, config, local_key, dht_cipher, Some(master_key), tor).await
     }
 
     async fn with_config(
@@ -300,20 +321,66 @@ impl P2PNode {
         local_key: libp2p::identity::Keypair,
         dht_cipher: DHTCipher,
         master_key: Option<[u8; 32]>,
+        tor: Option<crate::p2p::tor::handle::TorHandle>,
     ) -> Result<Self> {
         let peer_id = PeerId::from(local_key.public());
         let identity_keypair = local_key.clone();
         log::debug!("Local peer id: {peer_id}");
 
-        let mut swarm = build_swarm(local_key, &relay_config).await?;
+        // Onion transport: when a Tor generation is running, register the
+        // TorTransport factory (dials /onion3/, inbound via accept channel)
+        // and subscribe our service listen addr.
+        #[cfg(feature = "embedded-tor")]
+        let onion_factory = tor.as_ref().map(|t| {
+            // The transport resolves the client lazily at dial time — safe
+            // to register before bootstrap finishes (race fixed by
+            // client_slot). The inbound sender is parked until a
+            // generation's rend stream exists.
+            let transport = crate::p2p::tor::transport::TorTransport::new(t.client_slot());
+            t.wire_inbound(transport.accept_tx());
+            Box::new(
+                move |key: &libp2p::identity::Keypair| {
+                    crate::p2p::tor::transport::upgrade(transport, key)
+                },
+            ) as crate::p2p::swarm_builder::UpgradedTransportFactory
+        });
+        #[cfg(not(feature = "embedded-tor"))]
+        let onion_factory = {
+            let _ = tor;
+            None
+        };
+
+        // Effective policy BEFORE the swarm is built (fail-closed): a
+        // `tor_only` desired mode builds a swarm with zero direct
+        // transports — TCP/QUIC/DNS/WS/mDNS/UPnP never exist, so nothing
+        // can fall back to direct networking.
+        let direct_allowed = tor.as_ref().is_none_or(|t| {
+            t.status().desired_mode != crate::p2p::tor::mode::TorMode::TorOnly
+        });
+        let onion_relay_enabled = tor.as_ref().is_some_and(|t| t.onion_relay_enabled());
+        let mut swarm = build_swarm(local_key, &relay_config, onion_factory, direct_allowed, onion_relay_enabled).await?;
+
+        #[cfg(feature = "embedded-tor")]
+        let own_onion = tor.as_ref().and_then(|t| t.listen_multiaddr());
+        #[cfg(not(feature = "embedded-tor"))]
+        let own_onion: Option<Multiaddr> = None;
+        if let Some(listen) = &own_onion {
+            if let Err(e) = swarm.listen_on(listen.clone()) {
+                log::warn!("onion listen_on failed for {}: {}", listen, e);
+            }
+        }
 
         // Listen strategy by role:
         // - Client: ephemeral ports only (never relay, no need for stable port).
         // - Auto/Relay: fixed port so UPnP mappings and advertised addrs stay
         //   stable across restarts; fall back to ephemeral on conflict
         //   (e.g. two instances on one machine).
-        let wants_fixed_port =
-            relay_config.role != NodeRole::Client && relay_config.listen_port != 0;
+        // tor_only: the swarm has NO direct transports — every ip4/ip6
+        // listen_on below would error out ("Multiaddr is not supported")
+        // and take the whole node build down in a retry loop.
+        let wants_fixed_port = direct_allowed
+            && relay_config.role != NodeRole::Client
+            && relay_config.listen_port != 0;
         let port = relay_config.listen_port;
         let mut bound = false;
         if wants_fixed_port {
@@ -333,46 +400,50 @@ impl P2PNode {
                 log::warn!("Port {} unavailable, falling back to ephemeral", port);
             }
         }
-        if !bound {
-            swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-            swarm.listen_on("/ip4/0.0.0.0/tcp/0/ws".parse()?)?;
-        }
-        // QUIC listener on the same numeric port — UDP and TCP port
-        // namespaces are independent, so no clash. Best-effort: losing the
-        // QUIC listener must not take down TCP.
-        let quic_spec = format!(
-            "/ip4/0.0.0.0/udp/{}/quic-v1",
-            if bound { port } else { 0 }
-        );
-        match quic_spec.parse::<Multiaddr>() {
-            Ok(m) => {
-                if let Err(e) = swarm.listen_on(m) {
-                    log::debug!("QUIC listener {} unavailable: {}", quic_spec, e);
-                }
+        if direct_allowed {
+            if !bound {
+                swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+                swarm.listen_on("/ip4/0.0.0.0/tcp/0/ws".parse()?)?;
             }
-            Err(e) => log::debug!("Bad QUIC listen spec {}: {}", quic_spec, e),
-        }
-        // IPv6 listeners — mobile carriers frequently hand out globally
-        // routable v6 even where v4 sits behind CGNAT. A bound v6 listener
-        // is what lets AutoNAT prove public reachability and an Auto node
-        // (incl. Android) become a real relay. Best-effort: hosts/networks
-        // without IPv6 simply skip these (sockets are IPV6_V6ONLY, so no
-        // dual-stack port clash with the ip4 binds above).
-        for spec in [
-            format!("/ip6/::/tcp/{}", if bound { port } else { 0 }),
-            format!(
-                "/ip6/::/tcp/{}/ws",
-                if bound { port.checked_add(1).unwrap_or(0) } else { 0 }
-            ),
-            format!("/ip6/::/udp/{}/quic-v1", if bound { port } else { 0 }),
-        ] {
-            match spec.parse::<Multiaddr>() {
+            // QUIC listener on the same numeric port — UDP and TCP port
+            // namespaces are independent, so no clash. Best-effort: losing
+            // the QUIC listener must not take down TCP.
+            let quic_spec = format!(
+                "/ip4/0.0.0.0/udp/{}/quic-v1",
+                if bound { port } else { 0 }
+            );
+            match quic_spec.parse::<Multiaddr>() {
                 Ok(m) => {
                     if let Err(e) = swarm.listen_on(m) {
-                        log::debug!("IPv6 listener {} unavailable: {}", spec, e);
+                        // UDP should bind essentially always — a failure
+                        // silently cuts hole-punch odds (DCUtR prefers QUIC).
+                        log::warn!("QUIC listener {} unavailable: {}", quic_spec, e);
                     }
                 }
-                Err(e) => log::debug!("Bad IPv6 listen spec {}: {}", spec, e),
+                Err(e) => log::warn!("Bad QUIC listen spec {}: {}", quic_spec, e),
+            }
+            // IPv6 listeners — mobile carriers frequently hand out globally
+            // routable v6 even where v4 sits behind CGNAT. A bound v6 listener
+            // is what lets AutoNAT prove public reachability and an Auto node
+            // (incl. Android) become a real relay. Best-effort: hosts/networks
+            // without IPv6 simply skip these (sockets are IPV6_V6ONLY, so no
+            // dual-stack port clash with the ip4 binds above).
+            for spec in [
+                format!("/ip6/::/tcp/{}", if bound { port } else { 0 }),
+                format!(
+                    "/ip6/::/tcp/{}/ws",
+                    if bound { port.checked_add(1).unwrap_or(0) } else { 0 }
+                ),
+                format!("/ip6/::/udp/{}/quic-v1", if bound { port } else { 0 }),
+            ] {
+                match spec.parse::<Multiaddr>() {
+                    Ok(m) => {
+                        if let Err(e) = swarm.listen_on(m) {
+                            log::debug!("IPv6 listener {} unavailable: {}", spec, e);
+                        }
+                    }
+                    Err(e) => log::debug!("Bad IPv6 listen spec {}: {}", spec, e),
+                }
             }
         }
 
@@ -409,6 +480,66 @@ impl P2PNode {
                     external_addrs.push(addr);
                 }
                 Err(e) => log::warn!("Invalid external_addr '{}': {}", ext, e),
+            }
+        }
+
+        // Case 1 (Wi-Fi router NAT): NAT-PMP port-mapping probe. Runs only
+        // when a private LAN IPv4 exists (returns fast on direct/CGNAT
+        // interfaces). A successful lease is *real* inbound reachability —
+        // the router itself confirmed the mapping — so it also promotes the
+        // node to Kademlia Server and NatStatus::Public below.
+        let quic_port = libp2p_quic::stun_hook::observed_stun_mapping()
+            .map(|m| m.local_port)
+            .unwrap_or(if bound { port } else { 0 });
+        let nat_pmp_lease = if quic_port != 0 {
+            tokio::task::spawn_blocking(move || {
+                crate::p2p::nat_pmp::probe_lan_nat_pmp(quic_port, quic_port)
+            })
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+        // The lease's external IP must match STUN's observed IP — otherwise
+        // the ISP double-NATs above the router and the mapping is reachable
+        // only inside the ISP's inner network, not from the WAN.
+        let nat_pmp_public = nat_pmp_lease
+            .as_ref()
+            .map(crate::p2p::nat_pmp::lease_confirms_public)
+            .unwrap_or(false);
+        if let Some(ref lease) = nat_pmp_lease {
+            for addr in lease.to_multiaddrs() {
+                log::info!(
+                    "NAT-PMP lease via gateway {} → external {}{}",
+                    lease.gateway, addr,
+                    if nat_pmp_public { "" } else { " (double-NAT — candidate only)" }
+                );
+                swarm.add_external_address(addr.clone());
+                external_addrs.push(addr);
+            }
+            if nat_pmp_public {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .set_mode(Some(kad::Mode::Server));
+            }
+        }
+
+        // STUN: the QUIC listener hook already probed during listen_on, so
+        // the observed external mapping is usually populated here. The
+        // mapped addr is a dial candidate for hole-punching invites —
+        // registered as external WITHOUT claiming Public (AutoNAT dial-back
+        // remains the arbiter of confirmed reachability).
+        let stun_mapping = crate::p2p::stun_keepalive::current_or_probe_mapping(quic_port);
+        if let Some(ref mapping) = stun_mapping {
+            let addr = crate::p2p::stun_keepalive::mapping_to_quic_multiaddr(mapping);
+            log::info!("STUN external mapping {:?}: {}", mapping.nat_kind, addr);
+            if !external_addrs.contains(&addr)
+                && relay_config.privacy == crate::p2p::relay_config::PrivacyMode::Direct
+            {
+                swarm.add_external_address(addr.clone());
+                external_addrs.push(addr);
             }
         }
 
@@ -486,17 +617,42 @@ impl P2PNode {
             cache
         };
 
+        // Platform-adaptive profile — picks behavior policy from the build
+        // target + session type. `relay_config.profile_override` lets an
+        // operator force a profile; auto = compile-time detection.
+        let profile = crate::p2p::profile::NodeProfile::detect(None);
+        log::info!("Node profile: {}", profile.name());
+
         // A node configured with an explicit public external addr — or
         // running as a dedicated relay — is reachable by construction; do
         // not leave it `Unknown` (UI shows "Behind the NAT", invites omit
         // the direct addrs and `should_relay()` stays off for Auto role).
+        // On Mobile the Relay role does NOT confer reachability — a phone on
+        // CGNAT cannot accept inbound, so treating role=Relay as assumed-Public
+        // produced a fake "Public" badge while invites stayed empty.
+        let relay_role_credible = relay_config.role
+            == crate::p2p::relay_config::NodeRole::Relay
+            && profile.kind != crate::p2p::profile::ProfileKind::Mobile;
+        // A completed STUN probe PROVES we sit behind a NAT (the external
+        // mapping exists only because a NAT rewrote the source). On mobile
+        // AutoNAT dial-back may never run — leaving `Unknown` there meant a
+        // permanent "Detecting…" badge. `Private` is the honest label until
+        // a peer confirms reachability; `Unknown` is kept for the no-info
+        // case (probe failed entirely).
         let nat_status = if relay_config.external_addr.is_some()
-            || relay_config.role == crate::p2p::relay_config::NodeRole::Relay
+            || relay_role_credible
+            || nat_pmp_public
         {
             NatStatus::Public
+        } else if stun_mapping.is_some() {
+            NatStatus::Private
         } else {
             NatStatus::Unknown
         };
+
+        // Outbound proxy (proxy_config.json): default Off — a no-op when
+        // absent or invalid, preserving stock dial behaviour.
+        crate::p2p::proxy_config::NoidProxyConfig::load(data_dir).apply();
 
         Ok(Self {
             swarm,
@@ -529,7 +685,9 @@ impl P2PNode {
             audit_log: None,
             relay_config,
             nat_status,
+            profile,
             external_addrs,
+            own_onion_addr: own_onion,
             relayed_addrs: Vec::new(),
             mailbox_record_peer: None,
             relayed_listener_refs: std::collections::HashMap::new(),
@@ -565,6 +723,9 @@ impl P2PNode {
             dead_addrs: std::collections::HashMap::new(),
             pending_prekey_puts: std::collections::HashMap::new(),
             deferred_dht_puts: Vec::new(),
+            last_network_change: None,
+            pending_network_change: false,
+            tor,
         })
     }
 
@@ -636,6 +797,18 @@ impl P2PNode {
         self.local_dht_records.insert(key, value);
     }
 
+    /// B2: whether Kademlia's routing table holds at least one peer.
+    /// With zero routing peers every `put_record` fails instantly —
+    /// publishing attempts must wait for the first RoutingUpdated instead
+    /// of storming QuorumFailed retries.
+    pub(crate) fn routing_has_peers(&mut self) -> bool {
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .kbuckets()
+            .any(|b| b.iter().next().is_some())
+    }
+
     /// DHT-02: publish a record, tracking the query for retry — on a
     /// synchronous refusal (empty routing table at cold start) the record
     /// is parked in `deferred_dht_puts` and retried by the status tick.
@@ -665,8 +838,10 @@ impl P2PNode {
     /// DHT-02: retry parked records — drained once Kademlia actually has
     /// peers to seed a query. Records that STILL fail stay queued; the
     /// put_record cap (32) bounds the backlog.
+    /// B2: skip the drain entirely while the routing table is empty —
+    /// every attempt would just re-park and log another QuorumFailed.
     pub(crate) fn drain_deferred_dht_puts(&mut self) {
-        if self.deferred_dht_puts.is_empty() {
+        if self.deferred_dht_puts.is_empty() || !self.routing_has_peers() {
             return;
         }
         let pending = std::mem::take(&mut self.deferred_dht_puts);

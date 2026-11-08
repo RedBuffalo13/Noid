@@ -1,10 +1,12 @@
 pub mod constants;
 pub mod types;
 pub mod behaviour;
+pub mod build_behaviour;
 pub mod relay_config;
 pub mod relay_status;
 pub mod swarm_builder;
 pub mod node;
+pub mod net_change;
 pub mod peer_ops;
 pub mod dht_ops;
 pub mod dht_username_ops;
@@ -14,6 +16,7 @@ pub mod mailbox_guard;
 pub mod relay_ops;
 pub mod relay_rate_limit;
 pub mod room_payload;
+pub mod endpoint_record;
 pub mod event_loop;
 pub mod invite;
 pub mod load_bootstrap;
@@ -28,6 +31,16 @@ pub mod transport_rank;
 pub mod is_wan_cacheable;
 pub mod register_peer_addr;
 pub mod dead_addr;
+pub mod tor;
+pub mod proxy_config;
+pub mod stun_keepalive;
+pub mod nat_pmp;
+pub mod punch_assist;
+pub mod cgnat_rendezvous;
+pub mod cgnat_dial;
+#[cfg(test)]
+pub mod proxy_handshake_test;
+pub mod profile;
 pub mod validating_store;
 pub mod get_record_miss;
 #[cfg(test)]

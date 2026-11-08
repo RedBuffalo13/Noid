@@ -9,6 +9,9 @@ use crate::p2p::types::{MessageType, NoidMessage};
 use tempfile::tempdir;
 
 async fn create_test_node() -> P2PNode {
+    // Tests must not emit real WAN probes (STUN / NAT-PMP / Mainline DHT) —
+    // results would depend on the host's actual router and ISP.
+    std::env::set_var("NOID_DISABLE_STUN", "1");
     let dir = tempdir().unwrap();
     P2PNode::new(dir.path()).await.unwrap()
 }

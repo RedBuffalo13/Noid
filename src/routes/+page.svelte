@@ -2,11 +2,11 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { authStore, uiStore, chatStore, contactStore, usernameStore } from "$lib/stores";
-  import AuthScreen from "$lib/screens/AuthScreen.svelte";
-  import MainScreen from "$lib/screens/MainScreen.svelte";
-  import type { ChatMsgEvent, MessageReadEvent, MessageFailedEvent, Unlistener } from "$lib/types/events";
-  import { t } from "$lib/i18n/index.svelte";
+  import { authStore, uiStore, chatStore, contactStore, usernameStore } from "#lib/stores";
+  import AuthScreen from "#lib/screens/AuthScreen.svelte";
+  import MainScreen from "#lib/screens/MainScreen.svelte";
+  import type { ChatMsgEvent, MessageReadEvent, MessageFailedEvent, Unlistener } from "#lib/types/events";
+  import { t } from "#lib/i18n/index.svelte";
   import {
     initializeNotifications,
     notifyChatMessage,
@@ -14,7 +14,7 @@
     notifyContactAccepted,
     notifyRoomMessage,
     notifyRoomInvite,
-  } from "$lib/notifications";
+  } from "#lib/notifications";
 
   onMount(() => {
     let unlisteners: Unlistener[] = [];
@@ -197,7 +197,7 @@
       }));
 
       // Encrypted rooms: verified+decrypted envelopes arrive as room-msg.
-      const { onRoomMessage, onRoomInvite } = await import("$lib/services/room_service");
+      const { onRoomMessage, onRoomInvite } = await import("#lib/services/room_service");
       await reg(onRoomMessage((payload) => {
         if (uiStore.subPage === "room-view" && payload.room_id === chatStore.currentPeer) {
           chatStore.appendMessage({
@@ -218,7 +218,7 @@
         notifyRoomInvite(payload.from);
       }));
       // Room membership/meta/key events → keep open settings in sync.
-      const { roomStore } = await import("$lib/stores/room_store.svelte");
+      const { roomStore } = await import("#lib/stores/room_store.svelte");
       await reg(roomStore.bindEvents());
       await roomStore.loadPendingInvites();
 

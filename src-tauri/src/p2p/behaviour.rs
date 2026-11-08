@@ -19,8 +19,9 @@ pub struct NoidBehaviour {
     /// NAT reachability measurement (client probes via other peers,
     /// server side lets us probe others).
     pub autonat: autonat::Behaviour,
-    /// UPnP/NAT-PMP port mapping on the local gateway.
-    pub upnp: upnp::tokio::Behaviour,
+    /// UPnP/NAT-PMP port mapping on the local gateway — Toggle so a strict
+    /// (`tor_only`) build can disable the LAN socket path entirely.
+    pub upnp: libp2p::swarm::behaviour::toggle::Toggle<upnp::tokio::Behaviour>,
     /// Phase B.2: Mailbox protocol for offline message delivery
     pub mailbox: request_response::json::Behaviour<MailboxRequest, MailboxResponse>,
     /// SEC-06: hard cap on pending/established connections so a flood of
@@ -33,7 +34,7 @@ pub enum NoidBehaviourEvent {
     Gossipsub(gossipsub::Event),
     Mdns(mdns::Event),
     Ping(ping::Event),
-    Identify(identify::Event),
+    Identify(Box<identify::Event>),
     Kademlia(kad::Event),
     RequestResponse(request_response::Event<NoidMessage, NoidResponse>),
     Relay(relay::Event),
@@ -43,8 +44,8 @@ pub enum NoidBehaviourEvent {
     Upnp(upnp::Event),
     /// Phase B.2: Mailbox protocol events
     Mailbox(request_response::Event<MailboxRequest, MailboxResponse>),
-    /// connection_limits emits no events — Void is uninhabited.
-    Limits(void::Void),
+    /// connection_limits emits no events — Infallible is uninhabited.
+    Limits(std::convert::Infallible),
 }
 
 impl From<gossipsub::Event> for NoidBehaviourEvent {
@@ -67,7 +68,7 @@ impl From<ping::Event> for NoidBehaviourEvent {
 
 impl From<identify::Event> for NoidBehaviourEvent {
     fn from(event: identify::Event) -> Self {
-        NoidBehaviourEvent::Identify(event)
+        NoidBehaviourEvent::Identify(Box::new(event))
     }
 }
 
@@ -119,8 +120,8 @@ impl From<request_response::Event<MailboxRequest, MailboxResponse>> for NoidBeha
     }
 }
 
-impl From<void::Void> for NoidBehaviourEvent {
-    fn from(event: void::Void) -> Self {
-        void::unreachable(event)
+impl From<std::convert::Infallible> for NoidBehaviourEvent {
+    fn from(event: std::convert::Infallible) -> Self {
+        match event {}
     }
 }

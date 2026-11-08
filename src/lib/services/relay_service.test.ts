@@ -14,7 +14,7 @@ import {
   setPrivacyMode,
   onRelayStatus,
 } from "./relay_service";
-import type { RelayConfig, RelayStatus } from "$lib/relay";
+import type { RelayConfig, RelayStatus } from "#lib/relay";
 
 const sampleConfig: RelayConfig = {
   role: "auto",

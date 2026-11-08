@@ -35,6 +35,7 @@ async fn fetch_after_connect(
 
 #[tokio::test]
 async fn direct_prekey_after_seed_outage_with_empty_routing_table() {
+    std::env::set_var("NOID_DISABLE_STUN", "1");
     let server_dir = tempfile::tempdir().expect("test directory");
     let client_dir = tempfile::tempdir().expect("test directory");
     let mut server = P2PNode::new_relay(server_dir.path(), Some(0)).await.expect("server");

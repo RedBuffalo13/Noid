@@ -1,4 +1,4 @@
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -7,7 +7,7 @@ import {
   updateFolderPassword as svcUpdateFolderPassword,
   deleteSharedFolder as svcDeleteSharedFolder,
   searchSharedFolders as svcSearchSharedFolders,
-} from "$lib/services/folder_service";
+} from "#lib/services/folder_service";
 import { uiStore } from "./ui_store.svelte";
 
 let folders = $state<[string, string, boolean][]>([]);

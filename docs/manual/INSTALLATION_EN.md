@@ -78,11 +78,20 @@ Full details: `docs/ANDROID_BUILD.md` (SDK/NDK versions, FGS notes).
 | `bootstrap_nodes.json` | app data dir | extra seed nodes (bundled seeds are compiled in) |
 | `noid.db` | app data dir | encrypted local storage |
 | `noid.log` | app log dir | UTC-redacted logs (`NOID_LOG=debug` for diagnostics) |
+| `tor/tor_config.json` | app data dir | Tor mode (`off`/`additional`/`tor_only`), consent version, onion-relay + metered flags — all persisted across restarts |
 
 Relay roles: `auto` (relays only when publicly reachable),
 `relay` (forced public node), `client` (never relays).
 Privacy: `direct` (default) or `relayed_only` (hides your IP from
 peers — relays still see it).
+
+**Embedded Tor (v0.2.0):** Settings → Tor → pick a mode and accept the
+one-time consent. `additional` keeps direct networking and adds your
+`.onion` service; `tor_only` is onion-only and fail-closed (no direct
+listeners are created). The onion identity (`tor/` keystore) is stable
+across reinstalls. On networks that DPI-block Tor, run an external VPN
+or wait for bridge support. `NOID_DISABLE_TOR=1` disables the feature
+completely at runtime.
 
 ## Updating an existing node
 

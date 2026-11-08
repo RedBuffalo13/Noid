@@ -1,0 +1,25 @@
+[package]
+name = "noid-sqlx09-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "sqlx09-fixture"
+path = "../compat.rs"
+
+[dependencies]
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "sqlite-bundled"] }
+libsqlite3-sys = "=0.37.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+anyhow = "1"
+base64 = "0.23.1"
+hex = "0.4"
+hkdf = "0.13"
+hmac = { version = "0.13", features = ["zeroize"] }
+rand = "0.10.3"
+sha2 = "0.11.1"
+zeroize = "1.9.1"

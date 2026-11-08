@@ -9,11 +9,25 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
     // BEFORE the is_locked_out early-return, otherwise a locked-out user
     // can never trigger the wipe (KillPin must always work).
     // RC15: Argon2 verify is ~seconds of blocking CPU — off the tokio worker.
+    // The kill and true verifies are independent hash computations — run
+    // them on two threads so the lockout gate costs one Argon2, not two.
     let pin_k = pin.clone();
     let security_arc = state.security.clone();
-    let is_kill_pin = tokio::task::spawn_blocking(move || {
+    let (is_kill_pin, true_pin_ok) = tokio::task::spawn_blocking(move || {
         let security = security_arc.blocking_lock();
-        security.verify_kill_pin(&pin_k)
+        let sec = &security;
+        std::thread::scope(|s| {
+            let pk = pin_k.clone();
+            let kill = s.spawn(move || sec.verify_kill_pin(&pk));
+            let pt = pin_k.clone();
+            let tru = s.spawn(move || match sec.verify_true_pin(&pt) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(e.to_string()),
+            });
+            let k = kill.join().unwrap_or(false);
+            let t = tru.join().unwrap_or_else(|_| Ok(false));
+            (k, t)
+        })
     })
     .await
     .map_err(|e| format!("verify task failed: {}", e))?;
@@ -33,6 +47,10 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
         // task resets p2p_tx/dht_cipher/my_id/ratchet state.
         state.login_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::gate_set(&state.p2p_start_tx, false);
+        // Stop the Tor generation before wiping its keys (see kill_switch.rs).
+        if let Err(e) = state.tor.stop().await {
+            log::error!("Tor shutdown before wipe failed: {}", e);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // RC15: secure_delete is synchronous fs work — keep it off the
@@ -84,18 +102,18 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
         }
     }
 
-    // Phase 3.1: Verify true PIN before deriving master key.
-    // Previously derive_key returned Ok for any PIN, making the lockout dead code.
-    // RC15: Argon2 verify+derive runs under spawn_blocking — the security
+    // Phase 3.1: The true PIN was already verified in parallel with the
+    // kill check above — only the key derivation remains.
+    // RC15: Argon2 derive runs under spawn_blocking — the security
     // guard is confined to the blocking task and never crosses other locks.
     let pin_d = pin.clone();
     let security_arc = state.security.clone();
     let derive_result = tokio::task::spawn_blocking(move || {
         let mut security = security_arc.blocking_lock();
-        match security.verify_true_pin(&pin_d) {
+        match true_pin_ok {
             Ok(true) => security.derive_key(&pin_d),
             Ok(false) => Err(anyhow::anyhow!("Invalid PIN")),
-            Err(e) => Err(e), // true_pin.hash missing or corrupt
+            Err(e) => Err(anyhow::anyhow!(e)),
         }
     })
     .await
@@ -138,6 +156,30 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
             };
             // From now on audit details (peer ids, msg ids) are sealed at rest.
             state.audit_log.set_key(master_key);
+            // Offline onion identity: creates/opens the encrypted keystore
+            // only — no Tor sockets, no bootstrap, no descriptor. Failure is
+            // non-fatal: Tor stays disabled and can retry on next login.
+            if let Err(e) = state.tor.ensure_identity(&master_key) {
+                log::warn!("onion identity ensure failed (Tor stays off): {}", e);
+            }
+            // Restore the persisted Tor mode: tor_config.json survives the
+            // restart, so a user who left Tor on does not have to re-toggle
+            // it every session. Requires nonzero consent (set_desired
+            // refuses 0) and a non-off mode; identity must exist — it was
+            // just ensured above. Identity/session state untouched.
+            #[cfg(feature = "embedded-tor")]
+            {
+                let cfg = crate::p2p::tor::config::load(
+                    &state.app_data_dir.join("tor").join("tor_config.json"),
+                )
+                .unwrap_or_default();
+                if cfg.mode != crate::p2p::tor::mode::TorMode::Off && cfg.consent_version > 0 {
+                    log::info!("Restoring persisted Tor mode {:?} (consent {})", cfg.mode, cfg.consent_version);
+                    if let Err(e) = state.tor.set_desired(cfg.mode, cfg.consent_version).await {
+                        log::error!("Persisted Tor mode restore failed: {}", e);
+                    }
+                }
+            }
             database
                 .attach_cipher(std::sync::Arc::new(
                     crate::security::field_cipher::FieldCipher::new(master_key),

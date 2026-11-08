@@ -1,16 +1,16 @@
 import { defineConfig } from "vitest/config";
-import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import { fileURLToPath } from "url";
 import path from "path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte({ preprocess: vitePreprocess() })],
   resolve: {
     conditions: ["browser"],
     alias: {
-      $lib: path.resolve(__dirname, "src/lib"),
+      "#lib": path.resolve(__dirname, "src/lib"),
     },
   },
   test: {

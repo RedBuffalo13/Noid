@@ -12,7 +12,7 @@ use aes_gcm::{
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use zeroize::Zeroize;
 
@@ -52,10 +52,10 @@ impl FieldCipher {
     /// FIELD_MAGIC || nonce(12) || ciphertext||tag
     pub fn encrypt_bytes(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         let ct = self
             .cipher()
-            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+            .encrypt(&Nonce::from(nonce_bytes), plaintext)
             .map_err(|e| anyhow!("field encrypt: {}", e))?;
         let mut out = Vec::with_capacity(FIELD_MAGIC.len() + 12 + ct.len());
         out.extend_from_slice(FIELD_MAGIC);
@@ -75,7 +75,7 @@ impl FieldCipher {
         }
         let (nonce_bytes, ct) = body.split_at(12);
         cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), ct)
+            .decrypt(&Nonce::from(<[u8; 12]>::try_from(nonce_bytes)?), ct)
             .map_err(|e| anyhow!("field decrypt: {}", e))
     }
 
@@ -103,7 +103,8 @@ impl FieldCipher {
     /// Distinct namespace per column so tokens aren't cross-correlatable.
     pub fn hmac_hex(&self, namespace: &str, value: &str) -> String {
         let mut mac =
-            <Hmac<Sha256> as Mac>::new_from_slice(&self.key).expect("HMAC accepts any key length");
+            <Hmac<Sha256> as hmac::digest::KeyInit>::new_from_slice(&self.key)
+                .expect("HMAC accepts any key length");
         mac.update(b"noid-field-hmac-v1");
         mac.update(namespace.as_bytes());
         mac.update(&[0]);

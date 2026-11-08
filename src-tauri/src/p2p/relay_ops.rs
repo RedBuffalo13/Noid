@@ -24,8 +24,12 @@ impl P2PNode {
     /// - `Client` → never (protocol-level limits are also zeroed).
     /// - `Auto` → only when AutoNAT confirmed we are publicly reachable.
     pub fn should_relay(&self) -> bool {
+        // A mobile node behind CGNAT cannot accept inbound — the Relay role
+        // is meaningless there and only burned the battery while faking a
+        // "Public" badge. Clamp to Auto semantics on Mobile.
+        let on_mobile = self.profile.kind == crate::p2p::profile::ProfileKind::Mobile;
         match self.relay_config.role {
-            NodeRole::Relay => true,
+            NodeRole::Relay => !on_mobile,
             NodeRole::Client => false,
             NodeRole::Auto => self.nat_status == NatStatus::Public,
         }
@@ -437,6 +441,16 @@ impl P2PNode {
             NatStatus::Unknown if !self.relayed_addrs.is_empty() => NatStatus::Private,
             s => s,
         };
+        let stun = libp2p_quic::stun_hook::observed_stun_mapping();
+        let stun_addr = stun
+            .as_ref()
+            .map(|m| crate::p2p::stun_keepalive::mapping_to_quic_multiaddr(m).to_string());
+        let nat_mapping = crate::p2p::stun_keepalive::nat_kind_label(
+            stun.as_ref().map(|m| m.nat_kind),
+            self.nat_status == NatStatus::Public,
+        )
+        .to_string();
+
         RelayStatus {
             nat_status,
             is_relaying: self.should_relay(),
@@ -453,6 +467,8 @@ impl P2PNode {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             peers_connected: self.swarm.connected_peers().count(),
+            stun_addr,
+            nat_mapping,
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.bst.noid
 
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -14,14 +15,17 @@ class MainActivity : TauriActivity() {
         super.onCreate(savedInstanceState)
         // Screenshots/recents blocked by default — matches desktop secure mode.
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        // Foreground service keeps the P2P node alive in background/Doze.
-        ContextCompat.startForegroundService(this, Intent(this, NoidService::class.java))
         NoidService.nodeLoaded = true
         requestBatteryWhitelist()
     }
 
     override fun onResume() {
         super.onResume()
+        // User interaction resets the dataSync budget and permits a new FGS.
+        if (!NoidService.serviceRunning) {
+            ContextCompat.startForegroundService(this, Intent(this, NoidService::class.java))
+        }
+        getSystemService(NotificationManager::class.java)?.cancel(NOID_RESUME_NOTIFICATION_ID)
         // AN-02: push visibility into Rust AtomicBool — the old read path
         // used find_class from a Tokio thread and always failed (BootClassLoader).
         NoidNative.onAppVisibilityChangedNative(true)

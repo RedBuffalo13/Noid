@@ -22,11 +22,11 @@ body{background:#0a0a0b;color:#e8e8ec;font-family:system-ui,sans-serif;min-heigh
 <div class="slide"><img id="s" src="slides/slide01_ru.svg" alt="slide"></div>
 <div class="nav">
 <button onclick="go(-1)">&larr;</button>
-<span id="c">1 / 10</span>
+<span id="c">1 / 11</span>
 <button onclick="go(1)">&rarr;</button>
 </div>
 <script>
-let i=1;const N=10,L="ru";
+let i=1;const N=11,L="ru";
 function go(d){i=Math.min(N,Math.max(1,i+d));u()}
 function u(){document.getElementById('s').src='slides/slide'+String(i).padStart(2,'0')+'_'+L+'.svg';document.getElementById('c').textContent=i+' / '+N}
 document.addEventListener('keydown',e=>{

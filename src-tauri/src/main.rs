@@ -20,6 +20,12 @@ fn no_display() -> bool {
 // the worker pool and let spawned code capture the wrong Handle. The
 // headless relay branch builds its runtime explicitly instead.
 fn main() {
+    // Must precede ANY rustls use: the dep tree pulls both aws-lc-rs and
+    // ring, and rustls 0.23 refuses to auto-pick — Arti's guard TLS would
+    // otherwise panic the tokio worker mid-bootstrap.
+    #[cfg(feature = "embedded-tor")]
+    noid_lib::p2p::tor::handle::install_crypto_provider();
+
     let args: Vec<String> = std::env::args().collect();
     let force_relay = args.iter().any(|a| a == "--relay" || a == "--headless");
     let force_gui = args.iter().any(|a| a == "--gui");

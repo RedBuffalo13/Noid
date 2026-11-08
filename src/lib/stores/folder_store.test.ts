@@ -8,7 +8,7 @@ const { invokeMock, openMock } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openMock }));
 
-vi.mock("$lib/services/folder_service", () => ({
+vi.mock("#lib/services/folder_service", () => ({
   updateFolderPath: vi.fn(),
   updateFolderVisibility: vi.fn(),
   updateFolderPassword: vi.fn(),
@@ -28,7 +28,7 @@ import {
   updateFolderPassword,
   deleteSharedFolder,
   searchSharedFolders,
-} from "$lib/services/folder_service";
+} from "#lib/services/folder_service";
 
 describe("folder_store", () => {
   beforeEach(() => {

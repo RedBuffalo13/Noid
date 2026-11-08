@@ -10,7 +10,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use anyhow::{anyhow, Result};
-use rand::RngCore;
+use rand::Rng;
 use std::path::Path;
 use zeroize::Zeroize;
 
@@ -36,10 +36,10 @@ pub fn save(path: &Path, material: &[u8], master_key: &[u8; 32]) -> Result<()> {
         .map_err(|e| anyhow!("Invalid master key: {}", e))?;
 
     let mut nonce = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
 
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), material)
+        .encrypt(&Nonce::from(nonce), material)
         .map_err(|e| anyhow!("Key encryption failed: {}", e))?;
 
     let mut out = Vec::with_capacity(MAGIC_V2.len() + NONCE_LEN + ciphertext.len());
@@ -79,7 +79,7 @@ fn decrypt_bytes(data: &[u8], master_key: &[u8; 32]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| anyhow!("Invalid master key: {}", e))?;
     let mut plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(&Nonce::from(<[u8; NONCE_LEN]>::try_from(nonce)?), ciphertext)
         .map_err(|_| anyhow!("Key decryption failed — wrong PIN or corrupted key file"))?;
     let out = plaintext.clone();
     plaintext.zeroize();

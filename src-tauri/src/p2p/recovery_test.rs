@@ -50,6 +50,7 @@ fn identical_signed_put_retry_preserves_expiry_and_rejects_rollback() {
 
 #[tokio::test]
 async fn bootstrap_transient_failures_do_not_quarantine_seed() {
+    std::env::set_var("NOID_DISABLE_STUN", "1");
     let dir = tempfile::tempdir().expect("test directory");
     let mut node = P2PNode::new_relay(dir.path(), Some(0)).await.expect("test node");
     let peer = PeerId::random();
@@ -73,6 +74,7 @@ async fn bootstrap_transient_failures_do_not_quarantine_seed() {
 
 #[tokio::test]
 async fn blind_bootstrap_transient_failures_do_not_quarantine_seed() {
+    std::env::set_var("NOID_DISABLE_STUN", "1");
     let dir = tempfile::tempdir().expect("test directory");
     let mut node = P2PNode::new_relay(dir.path(), Some(0)).await.expect("test node");
     let addr: Multiaddr = "/ip4/203.0.113.7/tcp/4020".parse().expect("fixture address");

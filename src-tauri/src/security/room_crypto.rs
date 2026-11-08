@@ -18,7 +18,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use anyhow::{anyhow, Result};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -29,7 +29,7 @@ pub struct RoomKey(pub [u8; 32]);
 impl RoomKey {
     pub fn generate() -> Self {
         let mut k = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut k);
+        rand::rng().fill_bytes(&mut k);
         Self(k)
     }
 
@@ -78,9 +78,9 @@ pub fn seal(
 ) -> Result<RoomEnvelope> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("room key: {}", e))?;
     let mut nonce = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .encrypt(&Nonce::from(nonce), plaintext)
         .map_err(|e| anyhow!("room encrypt: {}", e))?;
     // nonce || ct || tag
     let mut ciphertext = Vec::with_capacity(12 + ct.len());
@@ -130,7 +130,7 @@ pub fn open(key: &[u8; 32], room_id: &str, env: &RoomEnvelope) -> Result<Vec<u8>
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("room key: {}", e))?;
     let (nonce, ct) = env.ciphertext.split_at(12);
     cipher
-        .decrypt(Nonce::from_slice(nonce), ct)
+        .decrypt(&Nonce::from(<[u8; 12]>::try_from(nonce)?), ct)
         .map_err(|_| anyhow!("room envelope decrypt failed"))
 }
 

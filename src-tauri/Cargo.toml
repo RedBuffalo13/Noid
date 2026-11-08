@@ -1,6 +1,6 @@
 [package]
 name = "noid"
-version = "0.1.0"
+version = "0.2.0"
 description = "Noid Messenger"
 authors = ["amissa_domo"]
 edition = "2021"
@@ -23,11 +23,13 @@ tauri-plugin-fs = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-log = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1.0"
-tokio = { version = "1", features = ["full"] }
-libp2p = { version = "0.54", features = [
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+thiserror = "2.0"
+tokio = { version = "=1.54.1", features = ["full"] }
+libp2p-tcp = { version = "0.45", features = ["tokio"] }
+libp2p-quic = { version = "0.14", features = ["tokio"] }
+libp2p = { version = "0.57", features = [
     "tcp",
     "dns",
     "websocket",
@@ -49,45 +51,54 @@ libp2p = { version = "0.54", features = [
     "json",
     "serde",
 ] }
-# Direct dep so `void::Void` is nameable for the connection-limits
-# behaviour's event variant (already transitive via libp2p-swarm).
-void = "1"
-sqlx = { version = "0.8", features = [
-    "runtime-tokio",
-    "sqlite",
-    "macros",
-    "chrono",
-    "migrate",
-] }
-argon2 = { version = "0.5", features = ["std"] }
-aes-gcm = "0.10"
-rand = "0.8"
-futures = "0.3"
-dirs = "5.0"
-zeroize = { version = "1.7", features = ["derive"] }
-base64 = "0.22"
+sqlx = { version = "=0.9.0", features = ["runtime-tokio", "sqlite", "macros", "chrono", "migrate"] }
+argon2 = { version = "0.6.0", features = ["zeroize"] }
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+rand = "0.10.3"
+futures = "=0.3.34"
+dirs = "7.0"
+zeroize = { version = "=1.9.1", features = ["derive"] }
+base64 = "0.23.1"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.8", features = ["v4", "serde"] }
-anyhow = "1.0"
+uuid = { version = "=1.29.0", features = ["v4", "serde"] }
+anyhow = "=1.0.104"
 env_logger = "0.11"
-log = "0.4"
-regex = "1"
+log = "=0.4.35"
+regex = "=1.13.1"
 
 # DHT encryption
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
-hkdf = "0.12"
-sha2 = "0.10"
-rpassword = "7.3.1"
+x25519-dalek = { version = "3.0", features = ["static_secrets"] }
+hkdf = "0.13"
+sha2 = "0.11.1"
+rpassword = "7.5"
 hex = "0.4.3"
-hmac = "0.12"
+hmac = { version = "0.13", features = ["zeroize"] }
 tauri-plugin-single-instance = "2"
 
+# Embedded Tor (feature `embedded-tor`, runtime-off by default). Versions are
+# pinned exactly like the P0 probe: Arti's API is unstable between releases.
+arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service", "experimental-api"], optional = true }
+tor-hsservice = { version = "=0.48.0", default-features = false, optional = true }
+tor-keymgr = { version = "=0.48.0", default-features = false, features = ["keymgr", "experimental-api", "onion-service-cli-extra"], optional = true }
+tor-key-forge = { version = "=0.48.0", default-features = false, optional = true }
+tor-persist = { version = "=0.48.0", default-features = false, features = ["state-dir"], optional = true }
+tor-rtcompat = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls"], optional = true }
+tor-config-path = { version = "=0.48.0", default-features = false, optional = true }
+tor-error = { version = "=0.48.0", default-features = false, optional = true }
+tor-cell = { version = "=0.48.0", default-features = false, optional = true }
+tor-proto = { version = "=0.48.0", default-features = false, optional = true }
+safelog = { version = "0.10", optional = true }
+fs-mistrust = { version = "=0.16.1", optional = true }
+# Named so we can install an explicit CryptoProvider: the tree pulls BOTH
+# aws-lc-rs and ring, and rustls 0.23 refuses to auto-pick.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"], optional = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "0.22"
 ndk-context = "0.1"
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.27"
 
 # Vendored libp2p-tcp: `PortUse::Reuse` dials bind the outbound socket to our
 # own listen port. On Windows SO_REUSEADDR only tolerates that while no
@@ -99,3 +110,28 @@ tempfile = "3.10"
 # degrades to relayed connections on that platform.
 [patch.crates-io]
 libp2p-tcp = { path = "../vendor/libp2p-tcp" }
+libp2p-quic = { path = "../vendor/libp2p-quic" }
+# Stable GTK 3 needs GLib 0.18; backport gtk-rs-core#1343 without changing its ABI.
+glib = { path = "../vendor/glib" }
+# noid patch: arti-client's protocol-recommendation monitor calls
+# std::process::exit(1) on a fatal status — it would kill the messenger.
+# The vendored crate records the fatal report, forces the client dormant,
+# and exposes TorClient::protocol_fatal_reason() for the supervisor.
+arti-client = { path = "../vendor/arti-client" }
+[features]
+default = []
+embedded-tor = [
+    "dep:arti-client",
+    "dep:tor-hsservice",
+    "dep:tor-keymgr",
+    "dep:tor-key-forge",
+    "dep:tor-persist",
+    "dep:tor-rtcompat",
+    "dep:tor-config-path",
+    "dep:tor-error",
+    "dep:tor-cell",
+    "dep:tor-proto",
+    "dep:safelog",
+    "dep:fs-mistrust",
+    "dep:rustls",
+]

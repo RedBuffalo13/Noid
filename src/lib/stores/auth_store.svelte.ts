@@ -1,5 +1,5 @@
-import { t } from "$lib/i18n/index.svelte";
-import { login as svcLogin, setupPins as svcSetupPins, isFirstRun as svcIsFirstRun } from "$lib/services";
+import { t } from "#lib/i18n/index.svelte";
+import { login as svcLogin, setupPins as svcSetupPins, isFirstRun as svcIsFirstRun } from "#lib/services";
 import { profileStore } from "./profile_store.svelte";
 import { contactStore } from "./contact_store.svelte";
 import { uiStore } from "./ui_store.svelte";
@@ -99,27 +99,27 @@ export const authStore = {
     }
   },
 
-  async handleSetup() {
-    if (busy) return;
+  async handleSetup(): Promise<boolean> {
+    if (busy) return false;
     if (truePin !== confirmTruePin) {
       uiStore.showToast(t("auth.toast.mainMismatch"));
-      return;
+      return false;
     }
     if (killPin !== confirmKillPin) {
       uiStore.showToast(t("auth.toast.killMismatch"));
-      return;
+      return false;
     }
     if (truePin.length < 8) {
       uiStore.showToast(t("auth.toast.mainShort"));
-      return;
+      return false;
     }
     if (killPin.length < 8) {
       uiStore.showToast(t("auth.toast.killShort"));
-      return;
+      return false;
     }
     if (truePin === killPin) {
       uiStore.showToast(t("auth.toast.samePins"));
-      return;
+      return false;
     }
 
     busy = true;
@@ -132,14 +132,15 @@ export const authStore = {
         confirmTruePin = "";
         killPin = "";
         confirmKillPin = "";
-      } else {
-        uiStore.showToast(t("auth.toast.setupError", { e: res.message }));
+        return true;
       }
+      uiStore.showToast(t("auth.toast.setupError", { e: res.message }));
     } catch (e) {
       uiStore.showToast(t("auth.toast.setupError", { e: String(e) }));
     } finally {
       busy = false;
     }
+    return false;
   },
 
   resetSetup() {

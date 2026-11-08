@@ -1,6 +1,6 @@
 {
   "name": "noid",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "",
   "type": "module",
   "scripts": {
@@ -9,32 +9,40 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "test": "vitest run",
+    "pretest": "svelte-kit sync",
+    "test": "node --test vendor/deepmerge/security.test.cjs && vitest run",
     "test:watch": "vitest",
     "fix:link": "cargo clean --manifest-path src-tauri/Cargo.toml -p noid",
     "tauri": "tauri"
   },
   "license": "MIT",
+  "overrides": {
+    "deepmerge": "file:vendor/deepmerge"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-clipboard-manager": "2.3.2",
-    "@tauri-apps/plugin-dialog": "^2.7.3",
-    "@tauri-apps/plugin-fs": "^2.5.2",
-    "@tauri-apps/plugin-notification": "2.3.3",
-    "@tauri-apps/plugin-opener": "2.5.3"
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-clipboard-manager": "2.5.0",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-fs": "^2.7.1",
+    "@tauri-apps/plugin-notification": "2.8.0",
+    "@tauri-apps/plugin-opener": "2.7.2"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.66.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
-    "@tauri-apps/cli": "2.11.5",
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "2.12.4",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/svelte": "^5.4.2",
-    "jsdom": "^30.0.1",
-    "svelte": "^5.56.3",
-    "svelte-check": "4.0.0",
-    "typescript": "5.6.2",
-    "vite": "^6.4.3",
-    "vitest": "^5.0.0"
+    "@types/node": "^26.6.6",
+    "jsdom": "^31.0.0",
+    "svelte": "^5.57.3",
+    "svelte-check": "4.7.8",
+    "typescript": "6.0.3",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
   }
 }

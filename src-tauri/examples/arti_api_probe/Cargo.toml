@@ -1,0 +1,48 @@
+[package]
+name = "noid-arti-api-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service", "experimental-api"] }
+tor-hsservice = { version = "=0.48.0", default-features = false }
+tor-keymgr = { version = "=0.48.0", default-features = false, features = ["keymgr", "experimental-api", "onion-service-cli-extra"] }
+tor-key-forge = { version = "=0.48.0", default-features = false }
+tor-persist = { version = "=0.48.0", default-features = false, features = ["state-dir"] }
+tor-rtcompat = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls"] }
+tor-config-path = { version = "=0.48.0", default-features = false }
+tor-error = { version = "=0.48.0", default-features = false }
+safelog = "0.10"
+tor-cell = { version = "=0.48.0", default-features = false }
+tor-proto = { version = "=0.48.0", default-features = false }
+libp2p = { version = "=0.57.1", default-features = false, features = ["noise", "yamux", "ed25519"] }
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+anyhow = "1"
+futures = "0.3"
+hkdf = "0.13"
+rand = "0.10"
+serde_json = "1"
+sha2 = "0.11.1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+zeroize = "1.9.1"
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "chrono", "migrate"] }
+
+# Probe exercises the same vendored arti-client the app links: the vendor
+# patch replaces std::process::exit(1) on fatal protocol recommendations.
+[patch.crates-io]
+arti-client = { path = "../../../vendor/arti-client" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "ring", "std", "tls12"] }
+tempfile = "3.27"
+fs-mistrust = "=0.16.1"
+libp2p-identity-legacy = { version = "=0.2.14", package = "libp2p-identity", default-features = false, features = ["ed25519", "peerid", "rand"] }

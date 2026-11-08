@@ -3,7 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { vi, beforeEach } from "vitest";
 
 // --- Mock @tauri-apps/api/core invoke ---
-// Per-test override: import { mockInvoke } from "$lib/test/mocks"; mockInvoke.mockResolvedValue(...)
+// Per-test override: import { mockInvoke } from "#lib/test/mocks"; mockInvoke.mockResolvedValue(...)
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,

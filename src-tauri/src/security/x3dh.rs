@@ -86,7 +86,7 @@ impl Default for X3DH {
 
 impl X3DH {
     pub fn new() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let identity_secret = StaticSecret::random_from_rng(&mut rng);
         let identity_public = PublicKey::from(&identity_secret);
         Self {
@@ -117,7 +117,7 @@ impl X3DH {
     }
 
     pub fn generate_prekey_bundle(&self) -> (PrekeyBundle, StaticSecret, Option<StaticSecret>) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let signed_prekey_secret = StaticSecret::random_from_rng(&mut rng);
         let signed_prekey_public = PublicKey::from(&signed_prekey_secret);
 
@@ -141,7 +141,7 @@ impl X3DH {
         &self,
         bundle: &PrekeyBundle,
     ) -> Result<(InitialMessage, [u8; 32])> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let their_identity = parse_public_key(&bundle.identity_public)?;
         let their_signed_prekey = parse_public_key(&bundle.signed_prekey_public)?;
@@ -162,7 +162,7 @@ impl X3DH {
         // keys instead of all initiators racing on the same one), falling
         // back to the legacy single-key field.
         let chosen_otpk = if !bundle.one_time_prekeys.is_empty() {
-            use rand::seq::SliceRandom;
+            use rand::seq::IndexedRandom;
             bundle.one_time_prekeys.choose(&mut rng).cloned()
         } else {
             bundle.one_time_prekey_public.clone()

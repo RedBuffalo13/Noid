@@ -4,7 +4,7 @@ use aes_gcm::{
 };
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
-use rand::RngCore;
+use rand::Rng;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -115,9 +115,9 @@ impl AuditLog {
                 let cipher = Aes256Gcm::new_from_slice(&k)
                     .map_err(|e| anyhow!("audit cipher init: {}", e))?;
                 let mut nonce = [0u8; 12];
-                rand::thread_rng().fill_bytes(&mut nonce);
+                rand::rng().fill_bytes(&mut nonce);
                 let ct = cipher
-                    .encrypt(Nonce::from_slice(&nonce), details.as_bytes())
+                    .encrypt(&Nonce::from(nonce), details.as_bytes())
                     .map_err(|e| anyhow!("audit seal failed: {}", e))?;
                 let mut blob = nonce.to_vec();
                 blob.extend_from_slice(&ct);

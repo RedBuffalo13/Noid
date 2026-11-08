@@ -92,13 +92,61 @@ fn is_valid_noid_record(record: &Record) -> bool {
 
 pub struct ValidatingStore {
     inner: MemoryStore,
+    /// B4: keys of recently-refused stale replays → last warn instant. A
+    /// misbehaving republisher offers the same stale record every cycle;
+    /// the record is always refused but the warn is emitted at most once
+    /// per key per `STALE_WARN_INTERVAL` to keep log noise bounded.
+    recent_stale: std::collections::HashMap<Vec<u8>, std::time::Instant>,
 }
+
+/// How long a stale-replay warn for a given key is suppressed.
+const STALE_WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+/// Cap on suppressed-key bookkeeping — a flood of distinct keys cannot
+/// grow the map unboundedly.
+const STALE_WARN_CAP: usize = 128;
 
 impl ValidatingStore {
     pub fn new(peer_id: PeerId) -> Self {
         Self {
             inner: MemoryStore::new(peer_id),
+            recent_stale: std::collections::HashMap::new(),
         }
+    }
+
+    /// Warn at most once per key per interval; returns true when the
+    /// caller should log.
+    fn stale_warn_allowed(&mut self, key: &[u8]) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.recent_stale.get(key) {
+            if now.duration_since(*last) < STALE_WARN_INTERVAL {
+                return false;
+            }
+        }
+        if self.recent_stale.len() >= STALE_WARN_CAP {
+            // Evict the oldest entries — keep the map bounded.
+            let oldest: Vec<Vec<u8>> = self
+                .recent_stale
+                .iter()
+                .map(|(k, t)| (k.clone(), *t))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|(k, t)| {
+                    if now.duration_since(t) >= STALE_WARN_INTERVAL {
+                        Some(k)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for k in oldest {
+                self.recent_stale.remove(&k);
+            }
+            if self.recent_stale.len() >= STALE_WARN_CAP {
+                return false;
+            }
+        }
+        self.recent_stale.insert(key.to_vec(), now);
+        true
     }
 }
 
@@ -164,7 +212,9 @@ impl RecordStore for ValidatingStore {
                 true
             };
             if !fresher {
-                log::warn!("DHT store refused stale record replay (key {:x?})", r.key);
+                if self.stale_warn_allowed(r.key.as_ref()) {
+                    log::warn!("DHT store refused stale record replay (key {:x?})", r.key);
+                }
                 return Err(libp2p::kad::store::Error::ValueTooLarge);
             }
         }

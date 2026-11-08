@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use rand::RngCore;
+use rand::Rng;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -49,7 +49,7 @@ pub fn secure_delete(path: &Path) -> Result<()> {
         while written < file_size {
             let n = std::cmp::min(buf.len() as u64, file_size - written) as usize;
             if random {
-                rand::thread_rng().fill_bytes(&mut buf[..n]);
+                rand::rng().fill_bytes(&mut buf[..n]);
             }
             writer.write_all(&buf[..n])?;
             written += n as u64;

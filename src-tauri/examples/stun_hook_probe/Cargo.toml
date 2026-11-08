@@ -1,0 +1,13 @@
+[package]
+name = "noid-stun-hook-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+rand = "=0.10.3"

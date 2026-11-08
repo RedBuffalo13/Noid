@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">Noid</string>
     <string name="main_activity_title">Noid</string>
+    <string name="noid_resume_message">Background service paused. Open Noid to resume.</string>
 </resources>

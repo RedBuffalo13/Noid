@@ -25,11 +25,15 @@ pub async fn get_my_invite(state: State<'_, AppState>) -> Result<String, String>
         (cfg.privacy, cfg.role)
     };
 
-    let addrs = if privacy == PrivacyMode::RelayedOnly {
+    let mut addrs = if privacy == PrivacyMode::RelayedOnly {
         let mut a = status.relayed_addrs;
         // A public relay's service address must be shareable — that is how
         // clients reach it. This never leaks a client node's direct addrs.
-        if role == crate::p2p::NodeRole::Relay {
+        // First-node case: with zero relays in the network there is nothing
+        // to reserve on — without the external/STUN fallback the invite is a
+        // bare PeerId nobody can dial, so the user-chosen invite carries the
+        // dial candidates instead.
+        if role == crate::p2p::NodeRole::Relay || a.is_empty() {
             a.extend(status.external_addrs);
         }
         a
@@ -38,6 +42,34 @@ pub async fn get_my_invite(state: State<'_, AppState>) -> Result<String, String>
         a.extend(status.relayed_addrs);
         a
     };
+    // tor_only: direct/STUN hints never belong in the invite — the only
+    // reachable path is our onion service. An onion hint is ALWAYS allowed
+    // (it's a hint, not a promise of reachability).
+    let tor_status = state.tor.status();
+    let tor_only = tor_status.desired_mode == crate::p2p::tor::mode::TorMode::TorOnly;
+    if let Some(onion) = &tor_status.onion_address {
+        let host = onion.strip_suffix(".onion").unwrap_or(onion);
+        let onion_addr = format!(
+            "/onion3/{}:{}/p2p/{}",
+            host,
+            crate::p2p::tor::onion_addr::ONION_VPORT,
+            peer
+        );
+        if !addrs.contains(&onion_addr) {
+            addrs.push(onion_addr);
+        }
+    }
+    // The STUN-mapped QUIC addr is a hole-punch dial candidate even while
+    // AutoNAT is still unsure — a user-shared invite may carry it when the
+    // list would otherwise be bare (Direct mode already has it via
+    // external_addrs). Never in tor_only.
+    if !tor_only {
+        if let Some(ref stun) = status.stun_addr {
+            if (privacy == PrivacyMode::Direct || addrs.is_empty()) && !addrs.contains(stun) {
+                addrs.push(stun.clone());
+            }
+        }
+    }
     // An invite is consumed by remote peers — loopback transports and
     // loopback-prefix circuits (reservations minted over the relay's
     // loopback listener) can only ever reach this host. Publishing them
@@ -52,6 +84,7 @@ pub async fn get_my_invite(state: State<'_, AppState>) -> Result<String, String>
                         crate::p2p::addr_class::AddrClass::PublicDirect
                             | crate::p2p::addr_class::AddrClass::Circuit
                             | crate::p2p::addr_class::AddrClass::Lan
+                            | crate::p2p::addr_class::AddrClass::Onion3
                     )
                 })
                 .unwrap_or(false)

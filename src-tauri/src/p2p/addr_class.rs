@@ -14,6 +14,9 @@ pub enum AddrClass {
     /// Exactly one `/p2p-circuit` over a public relay prefix, terminating at
     /// the expected peer.
     Circuit,
+    /// Canonical onion3 form `/onion3/<56>:<vport>[/p2p/<peer>]` — dialable
+    /// through the Tor transport only (never a direct socket).
+    Onion3,
     /// Structurally invalid for this peer: nested circuits, a circuit or
     /// addr terminating at a different peer id, `/tcp/0`, missing transport,
     /// or a circuit via a loopback/unspecified relay prefix.

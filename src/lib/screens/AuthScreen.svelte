@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { authStore } from "$lib/stores";
-  import { uiStore } from "$lib/stores";
-  import { t } from "$lib/i18n/index.svelte";
+  import { authStore } from "#lib/stores";
+  import { uiStore } from "#lib/stores";
+  import { t } from "#lib/i18n/index.svelte";
 
   // ---- Setup wizard state (4 steps: main → confirm → kill → confirm) ----
   // The first-run form used text inputs that fell below the keyboard/edge on
@@ -58,13 +58,16 @@
           uiStore.showToast(t("auth.setup.mismatch"));
           wizardPin = ""; setupStep = 2; return;
         }
-        // Fill the store fields handleSetup() validates against.
+        // Fill the store fields handleSetup() validates against. Local
+        // wizard state is cleared ONLY on success — a backend error must
+        // not bounce the user back to step 1 in an endless loop.
         authStore.truePin = wizardMainPin;
         authStore.confirmTruePin = wizardMainPin;
         authStore.killPin = wizardKillPin;
         authStore.confirmKillPin = wizardPin;
-        wizardPin = ""; wizardMainPin = ""; wizardKillPin = ""; setupStep = 0;
-        authStore.handleSetup();
+        authStore.handleSetup().then((ok) => {
+          if (ok) { wizardPin = ""; wizardMainPin = ""; wizardKillPin = ""; setupStep = 0; }
+        });
         break;
     }
   }
@@ -90,6 +93,11 @@
     <p class="setup-step-label">{t("auth.setup.step", { n: setupStep + 1 })}</p>
     <p class="auth-subtitle">{t(setupSteps[setupStep].titleKey)}</p>
     <p class="setup-hint">{t(setupSteps[setupStep].hintKey)}</p>
+    {#if authStore.busy}
+      <div class="busy-indicator" role="status" aria-live="polite">
+        <span class="spinner"></span><span>{t("auth.setup.working")}</span>
+      </div>
+    {/if}
     <div class="pin-display">
       {#each Array(8) as _, i}<div class="pin-dot" class:active={wizardPin.length > i}></div>{/each}
       {#if wizardPin.length > 8}<span class="pin-extra">+{wizardPin.length - 8}</span>{/if}
@@ -137,6 +145,11 @@
           · {t("auth.login.attemptsLeft", { n: authStore.attemptsRemaining })}
         {/if}
       </p>
+      {#if authStore.busy}
+        <div class="busy-indicator" role="status" aria-live="polite">
+          <span class="spinner"></span><span>{t("auth.login.unlockingHint")}</span>
+        </div>
+      {/if}
     {/if}
     <div class="pin-display">
       {#each Array(8) as _, i}<div class="pin-dot" class:active={authStore.pin.length > i}></div>{/each}
@@ -210,6 +223,23 @@
     opacity: 0.5;
     pointer-events: none;
   }
+  .busy-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 4px 0 8px;
+  }
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .wizard-actions {
     display: flex;
     gap: 16px;

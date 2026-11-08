@@ -13,7 +13,9 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.Build
 import android.os.PowerManager
+import androidx.core.app.NotificationCompat
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -30,6 +32,9 @@ class NoidService : Service() {
 
     companion object {
         @Volatile var nodeLoaded = false
+        /** True while the FGS is alive — the poll worker uses it as a
+         * watchdog signal: dead service => restart. */
+        @Volatile var serviceRunning = false
         private const val CHANNEL_ID = "noid_fg"
         private const val NOTIF_ID = 42
         private const val WAKE_TAG = "noid:p2p"
@@ -43,6 +48,7 @@ class NoidService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceRunning = true
         startForegroundWithNotification()
         acquireLocks()
         registerNetworkCallback()
@@ -57,14 +63,19 @@ class NoidService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** FGS dataSync on SDK 34+: onTimeout → keep locks, let the system
-     * rebind; do NOT release the wakelock or the node freezes. */
+    /** The OS requires stopping, not renewing locks or restarting foreground. */
     override fun onTimeout(startId: Int) {
-        acquireLocks()
-        startForegroundWithNotification()
+        stopSelf()
+        requestNoidResume(this)
+    }
+
+    /** Android 15 dataSync budgets use this overload, not the shortService one. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        onTimeout(startId)
     }
 
     override fun onDestroy() {
+        serviceRunning = false
         releaseLocks()
         networkCallback?.let {
             (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
@@ -75,7 +86,7 @@ class NoidService : Service() {
 
     private fun startForegroundWithNotification() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "Noid", NotificationManager.IMPORTANCE_MIN),
             )
@@ -84,7 +95,7 @@ class NoidService : Service() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val notif: Notification = Notification.Builder(this, CHANNEL_ID)
+        val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Noid")
             .setContentText("Защищённый узел активен")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
@@ -98,9 +109,15 @@ class NoidService : Service() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (wakeLock?.isHeld != true) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG).apply {
-                // 10-minute timeout — re-acquired in onTimeout/renew tick;
-                // a permanent wakelock invites OEM task-killers.
-                acquire(10 * 60 * 1000L)
+                // Permanent — held for the life of the FGS. The previous
+                // timed acquire(10 min) expired with NO renewal path
+                // (onTimeout is the FGS-lifetime callback, not a wakelock
+                // tick; the 15-min poll worker can't cover a 10-min gap):
+                // CPU slept, sockets froze — a guaranteed dead node.
+                // FGS already signals liveness to the OS; this wakelock is
+                // only for CPU during Doze. Standard pattern for always-on
+                // messengers (Signal, Briar).
+                acquire()
             }
         }
         if (multicastLock?.isHeld != true) {

@@ -50,9 +50,34 @@ impl P2PNode {
         // peer — bootstrap() never retries, so do it here until connected.
         let mut bootstrap_retry_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(30));
+        // WireGuard-style PersistentKeepalive: a 20s UDP pulse from the QUIC
+        // listener socket keeps the router/CGNAT mapping open (mobile CGNATs
+        // expire UDP state in 15-45s).
+        let mut stun_keepalive_interval =
+            tokio::time::interval(crate::p2p::stun_keepalive::STUN_KEEPALIVE_INTERVAL);
+        // Rendezvous results arrive from spawn_blocking tasks on this channel
+        // (Mainline-DHT announce/poll is synchronous UDP, ~1.5s worst case).
+        let (rv_tx, mut rv_rx) = mpsc::channel::<Vec<std::net::SocketAddr>>(8);
+        let mut rv_punched: std::collections::HashMap<
+            std::net::SocketAddr,
+            std::time::Instant,
+        > = std::collections::HashMap::new();
+        // NAT-PMP leases live 1h — re-probe inside the 20s tick at ~20min.
+        let mut last_natpmp_probe = std::time::Instant::now();
+        // B5: fast tick draining a debounced NetworkChanged — one handler
+        // run per burst, not one per ConnectivityManager callback.
+        let mut netchange_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        netchange_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
+                _ = netchange_tick.tick() => {
+                    if self.pending_network_change {
+                        self.pending_network_change = false;
+                        self.last_network_change = Some(std::time::Instant::now());
+                        self.on_network_changed();
+                    }
+                }
                 _ = relay_maintain_interval.tick() => {
                     // Renew circuit reservations before they expire (~1h TTL)
                     self.refresh_reservations();
@@ -142,6 +167,108 @@ impl P2PNode {
                 _ = bootstrap_retry_interval.tick() => {
                     self.retry_bootstrap_dials();
                 }
+                _ = stun_keepalive_interval.tick() => {
+                    // PersistentKeepalive: refresh the observed STUN mapping
+                    // and re-register the external addr if it moved (carrier
+                    // NAT re-allocation). Candidates only — AutoNAT remains
+                    // the arbiter of confirmed Public reachability.
+                    if let Some(mapping) = crate::p2p::stun_keepalive::tick_stun_keepalive(
+                        self.relay_config.listen_port,
+                    ) {
+                        let addr =
+                            crate::p2p::stun_keepalive::mapping_to_quic_multiaddr(&mapping);
+                        if !self.external_addrs.contains(&addr)
+                            && self.relay_config.privacy
+                                == crate::p2p::relay_config::PrivacyMode::Direct
+                        {
+                            log::info!("STUN external addr refreshed: {}", addr);
+                            self.swarm.add_external_address(addr.clone());
+                            self.external_addrs.push(addr);
+                        }
+                    }
+                    // NAT-PMP lease renewal (~20 min inside the 20s tick).
+                    if last_natpmp_probe.elapsed() > std::time::Duration::from_secs(1200) {
+                        last_natpmp_probe = std::time::Instant::now();
+                        let p = libp2p_quic::stun_hook::observed_stun_mapping()
+                            .map(|m| m.local_port)
+                            .unwrap_or(self.relay_config.listen_port);
+                        if p != 0 {
+                            let lease = tokio::task::spawn_blocking(move || {
+                                crate::p2p::nat_pmp::probe_lan_nat_pmp(p, p)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some(lease) = lease {
+                                for addr in lease.to_multiaddrs() {
+                                    if !self.external_addrs.contains(&addr) {
+                                        log::info!("NAT-PMP lease renewed → {}", addr);
+                                        self.swarm.add_external_address(addr.clone());
+                                        self.external_addrs.push(addr);
+                                    }
+                                }
+                                // Only a same-IP STUN match proves the lease
+                                // reaches the WAN (no double NAT above the
+                                // router).
+                                if self.nat_status != NatStatus::Public
+                                    && crate::p2p::nat_pmp::lease_confirms_public(&lease)
+                                {
+                                    self.nat_status = NatStatus::Public;
+                                    self.swarm
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .set_mode(Some(kad::Mode::Server));
+                                }
+                            }
+                        }
+                    }
+                    // Poll OUR rendezvous slot — peers dialing our invite
+                    // announce their external addr there; punching back
+                    // completes the mutual CGNAT pinhole.
+                    {
+                        let my_id = self.peer_id.to_string();
+                        let tx = rv_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let peers =
+                                crate::p2p::cgnat_rendezvous::announce_and_poll_rendezvous(
+                                    &my_id, &my_id, 0,
+                                );
+                            let _ = tx.try_send(peers);
+                        });
+                    }
+                }
+                Some(peers) = rv_rx.recv() => {
+                    let now = std::time::Instant::now();
+                    for sa in peers {
+                        let fresh = rv_punched
+                            .get(&sa)
+                            .map(|t| {
+                                now.duration_since(*t) < std::time::Duration::from_secs(300)
+                            })
+                            .unwrap_or(false);
+                        if fresh {
+                            continue;
+                        }
+                        rv_punched.insert(sa, now);
+                        crate::p2p::punch_assist::spawn_udp_punch_burst(sa, true);
+                        let mut maddr = Multiaddr::empty();
+                        match sa.ip() {
+                            std::net::IpAddr::V4(v4) => {
+                                maddr.push(libp2p::multiaddr::Protocol::Ip4(v4))
+                            }
+                            std::net::IpAddr::V6(v6) => {
+                                maddr.push(libp2p::multiaddr::Protocol::Ip6(v6))
+                            }
+                        }
+                        maddr.push(libp2p::multiaddr::Protocol::Udp(sa.port()));
+                        maddr.push(libp2p::multiaddr::Protocol::QuicV1);
+                        log::info!(
+                            "Rendezvous peer discovered at {} — mutual punch + dial",
+                            sa
+                        );
+                        let _ = self.dial(maddr).await;
+                    }
+                }
                 _ = peer_cache_flush.tick() => {
                     if self.peer_cache_dirty {
                         self.peer_cache
@@ -186,72 +313,24 @@ impl P2PNode {
                                 return Ok(());
                             }
                             P2PCommand::NetworkChanged => {
-                                // EL-01: the interface that owned every
-                                // addr and socket just died (Wi-Fi ↔ LTE,
-                                // Doze wake, VPN switch). On Android the old
-                                // TCP/WS sockets stay ESTABLISHED-but-dead
-                                // for ~60s — outbound requests routed onto
-                                // them burn full timeouts while the swarm
-                                // still reports the peer "connected".
-                                //
-                                // 1) All external addrs are stale — direct
-                                //    ones were bound to the dead interface,
-                                //    relayed ones rode reservations on conns
-                                //    that are dying too.
-                                let stale: Vec<Multiaddr> = self.external_addrs.to_vec();
-                                for addr in &stale {
-                                    self.swarm.remove_external_address(addr);
+                                // B5: ConnectivityManager can flap several
+                                // times a minute — each run drops every
+                                // external addr and non-QUIC conn, so bursts
+                                // are coalesced: within the window just mark
+                                // a pending run and let the debounce tick
+                                // fire the real handler once.
+                                const NETCHANGE_DEBOUNCE: std::time::Duration =
+                                    std::time::Duration::from_secs(5);
+                                if self
+                                    .last_network_change
+                                    .is_some_and(|t| t.elapsed() < NETCHANGE_DEBOUNCE)
+                                {
+                                    self.pending_network_change = true;
+                                } else {
+                                    self.last_network_change =
+                                        Some(std::time::Instant::now());
+                                    self.on_network_changed();
                                 }
-                                self.external_addrs.clear();
-                                // 2) Reservation bookkeeping belonged to the
-                                //    dead interface — clearing it lets
-                                //    refresh_reservations re-issue RESERVE
-                                //    instead of skipping a phantom
-                                //    "still held" reservation (the listener
-                                //    on the dead conn never revives).
-                                self.reserved_relays.clear();
-                                self.pending_reservations.clear();
-                                self.reservation_denied.clear();
-                                self.relayed_addrs.clear();
-                                self.relayed_listener_refs.clear();
-                                self.mailbox_record_peer = None;
-                                // 3) Backoffs / dead-addr marks observed on
-                                //    the dead network would suppress redials
-                                //    on the new one — clear them all.
-                                self.dial_backoffs.clear();
-                                self.addr_failures.clear();
-                                self.dead_addrs.clear();
-                                self.ping_failures.clear();
-                                self.bootstrap_retry_state.clear();
-                                // 4) Close connections that cannot migrate:
-                                //    TCP/WS sockets bound to the dead
-                                //    interface are zombies. QUIC keeps its
-                                //    conn-ID migration path — if migration
-                                //    fails, ping failure handling reaps it
-                                //    within ~30s anyway.
-                                let zombie: Vec<libp2p::swarm::ConnectionId> = self
-                                    .conn_quic
-                                    .values()
-                                    .flat_map(|m| m.iter())
-                                    .filter(|(_, quic)| !**quic)
-                                    .map(|(id, _)| *id)
-                                    .collect();
-                                for id in &zombie {
-                                    let _ = self.swarm.close_connection(*id);
-                                }
-                                log::info!(
-                                    "Network changed — dropped {} stale external addr(s), closing {} non-QUIC conn(s)",
-                                    stale.len(),
-                                    zombie.len()
-                                );
-                                // 5) Re-dial bootstrap seeds immediately so
-                                //    the relay book refills on the new
-                                //    interface; then re-reserve and
-                                //    re-discover (each accepted reservation
-                                //    republishes the mailbox record, A7).
-                                self.retry_bootstrap_dials();
-                                self.refresh_reservations();
-                                self.discover_relays();
                             }
                             P2PCommand::SendMessage { peer_id, msg } => {
                                 if let Ok(peer) = peer_id.parse::<libp2p::PeerId>() {
@@ -288,6 +367,7 @@ impl P2PNode {
                                             // if our manual dial hasn't
                                             // completed yet.
                                             self.register_peer_addr(peer, addr.clone(), "command", true);
+                                            self.assist_cgnat_dial(&addr, &rv_tx);
                                             let _ = self.dial(addr).await;
                                         }
                                     } else {
@@ -323,6 +403,7 @@ impl P2PNode {
                                     // User explicitly provided this address —
                                     // allowed even under RelayedOnly.
                                     self.allowed_dial_addrs.insert(addr.clone());
+                                    self.assist_cgnat_dial(&addr, &rv_tx);
                                     let _ = self.dial(addr).await;
                                 } else {
                                     log::warn!("DialAddress: invalid multiaddr {}", addr);
@@ -1143,6 +1224,41 @@ impl P2PNode {
                             log::debug!("Sent username announce to peer {}", peer_id);
                         }
 
+                        // P4: signed endpoint advertisement — our onion3
+                        // listen addr plus confirmed external addrs. The
+                        // receiver verifies the signature and caches the
+                        // endpoints as hints (an onion addr alone proves
+                        // nothing about reachability).
+                        {
+                            let mut endpoints: Vec<String> = Vec::new();
+                            if let Some(o) = &self.own_onion_addr {
+                                endpoints.push(o.to_string());
+                            }
+                            endpoints.extend(
+                                self.external_addrs.iter().map(|a| a.to_string()),
+                            );
+                            if !endpoints.is_empty() {
+                                match crate::p2p::endpoint_record::sign_record(
+                                    &self.identity_keypair,
+                                    endpoints,
+                                ) {
+                                    Ok(rec) => {
+                                        if let Ok(json) = serde_json::to_string(&rec) {
+                                            let adv = crate::p2p::types::NoidMessage {
+                                                sender: self.peer_id.to_string(),
+                                                content: json,
+                                                msg_type: crate::p2p::types::MessageType::EndpointAdvertise,
+                                                timestamp: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                            };
+                                            let _ = self.swarm.behaviour_mut().request_response.send_request(&peer_id, adv);
+                                        }
+                                    }
+                                    Err(e) => log::warn!("endpoint record sign failed: {}", e),
+                                }
+                            }
+                        }
+
                         // Once directly connected to a known relay, request a
                         // circuit reservation. Doing it here (not at dial time)
                         // avoids a race where the relay-client behaviour's own
@@ -1266,6 +1382,45 @@ impl P2PNode {
                                         ),
                                     );
                                 }
+                            } else if !had_reservation
+                                && !self.dial_is_backed_off(&peer_id)
+                                && !self
+                                    .pending_conn_close
+                                    .iter()
+                                    .any(|(_, p, _)| *p == peer_id)
+                            {
+                                // Mobile CGNAT mappings expire mid-session
+                                // (Tele2 kills idle TCP state in ~90-120s):
+                                // the conn dies while the peer stays online.
+                                // Re-punch + fast redial over its known
+                                // direct addrs — the relay path above only
+                                // covers lost reservations.
+                                let direct: Vec<Multiaddr> = self
+                                    .direct_addrs_of(&peer_id)
+                                    .into_iter()
+                                    .filter(|a| self.dial_allowed(a))
+                                    .collect();
+                                if !direct.is_empty() {
+                                    for a in &direct {
+                                        if let Some(sa) =
+                                            crate::p2p::punch_assist::extract_wan_socket_addr(a)
+                                        {
+                                            crate::p2p::punch_assist::spawn_udp_punch_burst(
+                                                sa, false,
+                                            );
+                                        }
+                                    }
+                                    log::info!(
+                                        "Peer {} lost — fast redial over {} direct addr(s)",
+                                        peer_id,
+                                        direct.len()
+                                    );
+                                    let _ = self.swarm.dial(
+                                        crate::p2p::dial_opts::dial_opts_multi(
+                                            peer_id, direct,
+                                        ),
+                                    );
+                                }
                             }
                         }
                         let _ = emit_ev(&event_tx, P2PEvent::RelayStatusChanged {
@@ -1303,7 +1458,8 @@ impl P2PNode {
                             if !emit_ev(&event_tx, P2PEvent::PeerDiscovered(peer_id.to_string(), addr.to_string())).await { return Ok(()); }
                         }
                     }
-                    SwarmEvent::Behaviour(NoidBehaviourEvent::Identify(identify::Event::Received { peer_id, connection_id, info, .. })) => {
+                    SwarmEvent::Behaviour(NoidBehaviourEvent::Identify(event)) => {
+                        if let identify::Event::Received { peer_id, connection_id, info, .. } = *event {
                         log::debug!("Identify received from peer {}: protocol={}, observed_addr={}", peer_id, info.protocol_version, info.observed_addr);
                         // Classify listen addrs before they reach Kademlia /
                         // peer_cache: nested circuits and foreign-terminal
@@ -1398,6 +1554,7 @@ impl P2PNode {
                                     }
                                 }
                             }
+                        }
                         }
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -1511,6 +1668,7 @@ impl P2PNode {
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::RequestResponse(request_response::Event::Message {
                         peer,
+                        connection_id: _,
                         message: request_response::Message::Request { request_id: _req_id, request, channel },
                     })) => {
                         // F18: any live inbound traffic proves the peer's
@@ -1559,9 +1717,13 @@ impl P2PNode {
                             continue;
                         }
 
-                        // UsernameAnnounce is answered inline — it is handled
-                        // synchronously below and never reaches the app layer.
-                        if !matches!(request.msg_type, crate::p2p::types::MessageType::UsernameAnnounce { .. }) {
+                        // UsernameAnnounce / EndpointAdvertise are answered
+                        // inline — handled synchronously below and never
+                        // reaching the app layer.
+                        if !matches!(request.msg_type,
+                            crate::p2p::types::MessageType::UsernameAnnounce { .. }
+                            | crate::p2p::types::MessageType::EndpointAdvertise)
+                        {
                             // TI-1: park the response channel. The transport
                             // "OK" doubles as the application-level ack and is
                             // sent only after the app layer reports durable
@@ -1629,6 +1791,34 @@ impl P2PNode {
                             continue;
                         }
 
+                        // P4: EndpointAdvertise — verify + canonicalize the
+                        // signed record, then cache its endpoints as hints.
+                        if matches!(request.msg_type, crate::p2p::types::MessageType::EndpointAdvertise) {
+                            match serde_json::from_str::<crate::p2p::endpoint_record::EndpointRecord>(&request.content) {
+                                Ok(rec) => {
+                                    // The record must name the connected
+                                    // peer — otherwise anyone could pin
+                                    // foreign endpoints on a session.
+                                    if rec.peer_id != peer.to_string() {
+                                        log::warn!("Endpoint record from {} names {} — dropped", peer, rec.peer_id);
+                                    } else {
+                                        match crate::p2p::endpoint_record::verify_and_canonicalize(&rec) {
+                                            Ok(addrs) => {
+                                                for a in &addrs {
+                                                    self.swarm.add_peer_address(peer, a.clone());
+                                                }
+                                                self.peer_cache.upsert(peer, addrs, false);
+                                                self.peer_cache_dirty = true;
+                                            }
+                                            Err(e) => log::warn!("Rejected endpoint record from {}: {}", peer, e),
+                                        }
+                                    }
+                                }
+                                Err(e) => log::warn!("Malformed endpoint record from {}: {}", peer, e),
+                            }
+                            continue;
+                        }
+
                         if !emit_ev(&event_tx, P2PEvent::RequestReceived {
                             from: peer.to_string(),
                             data: request,
@@ -1636,6 +1826,7 @@ impl P2PNode {
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::RequestResponse(request_response::Event::Message {
                         peer,
+                        connection_id: _,
                         message: request_response::Message::Response { request_id, response },
                     })) => {
                         log::debug!("Received response from {} for request {}", peer, request_id);
@@ -1693,6 +1884,7 @@ impl P2PNode {
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::RequestResponse(request_response::Event::OutboundFailure {
                         peer,
+                        connection_id: _,
                         request_id,
                         error,
                     })) => {
@@ -1766,6 +1958,7 @@ impl P2PNode {
                     // Phase B.2: Mailbox protocol — handle incoming mailbox requests
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Mailbox(request_response::Event::Message {
                         peer,
+                        connection_id: _,
                         message: request_response::Message::Request { request_id: _req_id, request, channel },
                     })) => {
                         // F18: live mailbox traffic also proves the conns.
@@ -1916,6 +2109,7 @@ impl P2PNode {
                     // Phase B.2: Mailbox protocol — handle incoming mailbox responses
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Mailbox(request_response::Event::Message {
                         peer,
+                        connection_id: _,
                         message: request_response::Message::Response { request_id, response },
                     })) => {
                         match response {
@@ -1946,6 +2140,7 @@ impl P2PNode {
                     // Phase B.2: Mailbox protocol — handle outbound failures
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Mailbox(request_response::Event::OutboundFailure {
                         peer,
+                        connection_id: _,
                         request_id,
                         error,
                     })) => {
@@ -2410,7 +2605,11 @@ impl P2PNode {
                         // A failed prekey publish is retried — without a
                         // published bundle no peer can initiate X3DH with us.
                         if let Some((record, attempts)) = self.pending_prekey_puts.remove(&id) {
-                            if attempts < 4 {
+                            // B2: an empty routing table makes every put
+                            // fail instantly — re-park instead of storming
+                            // retries; the deferred drain fires once a
+                            // routing peer exists.
+                            if attempts < 4 && self.routing_has_peers() {
                                 match self.swarm.behaviour_mut().kademlia.put_record(record.clone(), kad::Quorum::One) {
                                     Ok(qid) => {
                                         self.pending_prekey_puts.insert(qid, (record, attempts + 1));
@@ -2419,6 +2618,11 @@ impl P2PNode {
                                     Err(e2) => {
                                         log::warn!("Prekey publish retry could not be queued: {}", e2);
                                     }
+                                }
+                            } else if attempts < 4 {
+                                // Re-park — drained when a routing peer appears.
+                                if self.deferred_dht_puts.len() < 32 {
+                                    self.deferred_dht_puts.push(record);
                                 }
                             } else {
                                 log::warn!("Prekey bundle publish gave up after {} attempts — next republish cycle retries", attempts + 1);
@@ -2621,6 +2825,13 @@ impl P2PNode {
                                 if self.should_relay() {
                                     self.advertise_as_relay();
                                 }
+                                // RelayedOnly still needs circuit addrs — its
+                                // invites carry ONLY /p2p-circuit multiaddrs,
+                                // so without reservations the invite is a bare
+                                // peer id and the node is unreachable by design.
+                                if self.relay_config.privacy == crate::p2p::relay_config::PrivacyMode::RelayedOnly {
+                                    self.discover_relays();
+                                }
                             }
                             autonat::NatStatus::Private => {
                                 log::debug!("AutoNAT: we are behind NAT (private)");
@@ -2638,7 +2849,7 @@ impl P2PNode {
                         }).await;
                     }
                     // --- UPnP port-mapping results ---
-                    SwarmEvent::Behaviour(NoidBehaviourEvent::Upnp(upnp::Event::NewExternalAddr(addr))) => {
+                    SwarmEvent::Behaviour(NoidBehaviourEvent::Upnp(upnp::Event::NewExternalAddr { external_addr: addr, .. })) => {
                         log::debug!("UPnP: external address mapped {}", addr);
                         if self.relay_config.privacy == crate::p2p::relay_config::PrivacyMode::Direct {
                             self.swarm.add_external_address(addr.clone());
@@ -2655,7 +2866,7 @@ impl P2PNode {
                             status: self.relay_status(),
                         }).await;
                     }
-                    SwarmEvent::Behaviour(NoidBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr(addr))) => {
+                    SwarmEvent::Behaviour(NoidBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr { external_addr: addr, .. })) => {
                         log::debug!("UPnP: external address expired {}", addr);
                         self.external_addrs.retain(|a| *a != addr);
                     }
@@ -2786,11 +2997,11 @@ impl P2PNode {
                         self.active_circuits = self.active_circuits.saturating_sub(1);
                         log::debug!("Relay: circuit closed {} -> {}", src_peer_id, dst_peer_id);
                     }
-                    SwarmEvent::Behaviour(NoidBehaviourEvent::Relay(relay::Event::ReservationReqDenied { src_peer_id })) => {
+                    SwarmEvent::Behaviour(NoidBehaviourEvent::Relay(relay::Event::ReservationReqDenied { src_peer_id, .. })) => {
                         log::debug!("Relay: reservation denied for {} (limits)", src_peer_id);
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Relay(relay::Event::CircuitReqDenied {
-                        src_peer_id, dst_peer_id,
+                        src_peer_id, dst_peer_id, ..
                     })) => {
                         log::debug!("Relay: circuit denied {} -> {} (limits)", src_peer_id, dst_peer_id);
                     }
@@ -2847,8 +3058,8 @@ impl P2PNode {
                                 libp2p::swarm::DialError::Transport(list) => {
                                     failed.extend(list.iter().map(|(a, _)| a.clone()));
                                 }
-                                libp2p::swarm::DialError::WrongPeerId { endpoint, obtained } => {
-                                    let remote = endpoint.get_remote_address().clone();
+                                libp2p::swarm::DialError::WrongPeerId { address, obtained } => {
+                                    let remote = address.clone();
                                     // A pinned bootstrap seed whose identity
                                     // rotated answers WrongPeerId — adopt the
                                     // observed id instead of dead-marking the

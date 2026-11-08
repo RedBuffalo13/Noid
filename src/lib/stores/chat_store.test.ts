@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 
-vi.mock("$lib/services", () => ({
+vi.mock("#lib/services", () => ({
   getChatMessages: vi.fn(),
   getNewMessagesSince: vi.fn(),
   getAllMissedMessages: vi.fn(),
@@ -25,7 +25,7 @@ import {
   getNewMessagesSince,
   getAllMissedMessages,
   sendChatMessage,
-} from "$lib/services";
+} from "#lib/services";
 import { uiStore } from "./ui_store.svelte";
 
 describe("chat_store", () => {

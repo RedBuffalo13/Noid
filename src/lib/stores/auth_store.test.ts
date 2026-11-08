@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 
-vi.mock("$lib/services", () => ({
+vi.mock("#lib/services", () => ({
   login: vi.fn(),
   setupPins: vi.fn(),
   isFirstRun: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock("./username_store.svelte", () => ({
 }));
 
 import { authStore } from "./auth_store.svelte";
-import { login, setupPins, isFirstRun } from "$lib/services";
+import { login, setupPins, isFirstRun } from "#lib/services";
 import { profileStore } from "./profile_store.svelte";
 import { contactStore } from "./contact_store.svelte";
 import { uiStore } from "./ui_store.svelte";

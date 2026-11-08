@@ -102,7 +102,7 @@ impl RatchetSessionManager {
             }
             None => {
                 // Generate key material BEFORE any await — ThreadRng is not Send
-                let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+                let secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand::rng());
                 let public = x25519_dalek::PublicKey::from(&secret);
                 let pub_bytes = public.to_bytes().to_vec();
                 let priv_bytes = secret.to_bytes().to_vec();
@@ -119,7 +119,7 @@ impl RatchetSessionManager {
         let mut otpk_count = db.get_one_time_prekey_count().await?;
         while otpk_count < 10 {
             // Generate key material BEFORE any await — ThreadRng is not Send
-            let secret = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+            let secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand::rng());
             let public = x25519_dalek::PublicKey::from(&secret);
             let pub_bytes = public.to_bytes().to_vec();
             let priv_bytes = secret.to_bytes().to_vec();

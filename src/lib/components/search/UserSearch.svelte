@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { usernameStore } from "$lib/stores/username_store.svelte";
-  import { connectToAddr, sendContactRequest } from "$lib/services/contact_service";
-  import { uiStore } from "$lib/stores/ui_store.svelte";
+  import { usernameStore } from "#lib/stores/username_store.svelte";
+  import { connectToAddr, sendContactRequest } from "#lib/services/contact_service";
+  import { uiStore } from "#lib/stores/ui_store.svelte";
   import UserSearchResultCard from "./UserSearchResultCard.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { t } from "#lib/i18n/index.svelte";
 
   let searchInput = $state("");
   let requestMessage = $state("");

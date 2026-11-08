@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { UserRecord } from "$lib/types";
-  import { t } from "$lib/i18n/index.svelte";
+  import type { UserRecord } from "#lib/types";
+  import { t } from "#lib/i18n/index.svelte";
 
   let {
     record,

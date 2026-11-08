@@ -16,22 +16,93 @@ separate relay service to run.
 - **Zero server**: Kademlia DHT for usernames, prekeys and mailbox
   pointers; `/p2p-circuit` relay for NAT traversal; offline envelopes
   parked on peer mailbox nodes.
+- **Embedded Tor**: optional Arti client inside the same binary — every
+  node can publish its own `.onion` service, dial peers over onion3,
+  and run onion-relayed circuits. Three modes: off / additional /
+  tor-only (fail-closed). Consent-gated, stable onion identity, no
+  external tor daemon required.
 - **Cross-platform**: Windows, Linux/VPS, Android — one Rust core
-  (libp2p, Noise, QUIC/TCP/WebSocket, mDNS, AutoNAT) + Svelte 5 + Tauri 2.
+  (libp2p, Noise, QUIC/TCP/WebSocket, embedded Arti 0.48, mDNS, AutoNAT)
+  + Svelte 5 + Tauri 2.
 
 ## Status
 
-**Interim stable — `noid_stable_2610` (2026-10-27).**
+**v0.2.0 — Embedded Tor (2026-11-08).**
 
-✅ **Stable:** Windows and Linux builds — verified live bidirectional
-delivery, persisted E2EE history, 328 tests green.
+✅ **Verified live** on all platforms: Windows ↔ Linux VPS ↔ Android —
+onion bootstrap, descriptor publishing, onion3 dials, relayed circuits
+over onion, multi-path (onion + QUIC + TCP + WS) connectivity.
 
-⚠️ **Android:** the build works and is sideloadable, but has known issues
-(lifecycle, background delivery) — active work in progress. Treat the
-APK as experimental.
+✅ **Android (JP1 field test):** full Tor bootstrap on a real device,
+`gqd.onion` service published, stable identity across reinstalls,
+PIN/mode/relay persistence — verified end-to-end.
 
-**Roadmap:** SOCKS5/HTTP proxy support, file transfer polish, Android
-background reliability, further stability improvements.
+⚠️ **Known limitation:** on networks with Tor DPI filtering (several
+mobile carriers / ISPs), embedded Tor needs an external VPN tunnel or
+bridges — bridges/pluggable transports are planned for a later release.
+The normal P2P mesh works without Tor on any network.
+
+## Embedded Tor — why, what, risks, usage
+
+### Why we built onion in
+
+A pure-P2P messenger still has weak spots without Tor:
+
+- **Metadata exposure**: every direct connection reveals your IP to
+  contacts, relays and anyone watching the wire.
+- **Reachability**: behind CGNAT you depend on third-party relay
+  circuits — an address others can always dial is not guaranteed.
+- **Censorship**: a messenger that cannot survive blocked endpoints is
+  a messenger that works only where it is allowed to.
+
+Embedding Arti (the official Rust Tor client) directly into the binary
+gives every node a first-class `.onion` identity — no external tor
+daemon, no Orbot, no proxy config, no root.
+
+### What it gives you
+
+- **Your own hidden service**: a stable `*.onion` address derived from
+  your persistent identity key — published to Tor HSDirs, reachable by
+  any Noid user anywhere on earth, behind any NAT.
+- **Onion invites**: your invite string automatically carries the
+  `/onion3/…` endpoint alongside direct addresses — the receiver just
+  pastes it; Noid chooses the best path.
+- **Metadata resistance**: inside `tor_only` every circuit is 3-hop
+  onion routing — contacts see an onion address, never your IP.
+- **Onion-relayed circuits**: `/p2p-circuit` reservations can ride on
+  top of onion transports — relayed reachability stays inside the Tor
+  anonymity layer.
+- **Fail-closed tor_only**: no direct listeners, no silent fallback —
+  if Tor is down, nothing leaks to the raw internet.
+
+### Risks and honest limitations
+
+- **DPI blocking**: some carriers/ISPs drop Tor traffic entirely (we
+  verified this live on a Russian LTE carrier). Workarounds: run Noid
+  through an external VPN, use a non-filtering network, or wait for
+  bridge support (pluggable transports — planned, not in v0.2.0).
+- **Latency**: first bootstrap takes ~30–90 s (warm cache ~5 s);
+  circuits add round-trips — messaging stays usable but slower.
+- **Battery/data on Android**: Tor is off by default and requires
+  explicit consent; the onion-relay opt-in is a separate switch with a
+  separate metered-traffic consent.
+- **Not a magic cloak**: onion hides the transport path, not the fact
+  that your device runs Noid.
+
+### How to use
+
+1. Settings → **Tor** → pick a mode:
+   - `off` — Tor disabled (default), ordinary networking only;
+   - `additional` — onion service + dials alongside direct networking;
+   - `tor_only` — onion-only, fail-closed, no direct listeners.
+2. Accept the consent (versioned — asked once, persisted).
+3. Wait for bootstrap → *Tor ready* — your invite now includes the
+   `/onion3/` endpoint automatically.
+4. Optional: **Onion relay** switch lets your node carry other users'
+   circuits over Tor (separate metered-network consent on Android).
+
+The Tor mode, consent and relay flags persist across restarts —
+the node comes back in the mode you left it.
 
 ## Manual / Руководство (EN + RU)
 

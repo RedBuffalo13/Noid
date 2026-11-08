@@ -73,6 +73,13 @@ impl P2PNode {
                     .add_address(&peer, addr.clone());
                 self.swarm.add_peer_address(peer, addr.clone());
             }
+            // Onion hints go to the local dial book + peer cache only: they
+            // prove nothing about service availability, and pushing them
+            // into Kademlia would hand peers a dial they may have no Tor
+            // transport for.
+            AddrClass::Onion3 => {
+                self.swarm.add_peer_address(peer, addr.clone());
+            }
         }
         self.peer_cache.upsert(peer, vec![addr], false);
         self.peer_cache_dirty = true;

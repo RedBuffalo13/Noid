@@ -69,6 +69,10 @@ pub fn parse_invite(input: &str) -> Result<ParsedInvite, String> {
                 if addrs.len() >= MAX_PARSE_ADDRS {
                     return Err(format!("Too many addresses in invite (max {MAX_PARSE_ADDRS})"));
                 }
+                // Normalize `<56char>.onion` / `<56char>.onion:<vport>` into
+                // canonical `/onion3/host:vport` — invites pasted from
+                // browsers/QR use the DNS form, never the multiaddr one.
+                let raw = normalize_onion_host(raw);
                 let mut addr = raw
                     .parse::<Multiaddr>()
                     .map_err(|_| format!("Invalid address in invite: {raw}"))?;
@@ -98,6 +102,31 @@ pub fn parse_invite(input: &str) -> Result<ParsedInvite, String> {
         return Err("Address must contain a /p2p/<peerId> component".into());
     }
     Err("Not a valid invite, peer id or address".into())
+}
+
+/// `<56-char-base32>.onion[:vport]` → `/onion3/host:vport` string; anything
+/// else passes through unchanged. Default vport is the Noid service port.
+fn normalize_onion_host(raw: &str) -> String {
+    let (host, port) = match raw.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, p),
+        _ => (raw, ""),
+    };
+    let Some(base) = host.strip_suffix(".onion") else {
+        return raw.to_string();
+    };
+    if base.len() != 56
+        || !base
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c))
+    {
+        return raw.to_string();
+    }
+    let vport = if port.is_empty() {
+        crate::p2p::tor::onion_addr::ONION_VPORT
+    } else {
+        port.parse().unwrap_or(crate::p2p::tor::onion_addr::ONION_VPORT)
+    };
+    format!("/onion3/{}:{}", base, vport)
 }
 
 /// True when the addr's IP/DNS part is publicly routable.

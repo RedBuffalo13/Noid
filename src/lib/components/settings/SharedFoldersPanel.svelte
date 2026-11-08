@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { folderStore } from "$lib/stores/folder_store.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { folderStore } from "#lib/stores/folder_store.svelte";
+  import { t } from "#lib/i18n/index.svelte";
 
   let showPasswordModal = $state(false);
   let passwordFolderId = $state("");

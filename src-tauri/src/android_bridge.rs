@@ -20,8 +20,7 @@ mod imp {
     /// has no Java frames, so `attach_current_thread` + `find_class` sees
     /// only the BootClassLoader and can NEVER resolve `com.bst.noid.*`.
     /// The Kotlin side flips this flag via JNI on resume/pause instead.
-    static APP_VISIBLE: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static APP_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// Called once during app setup — registers the channel that Android
     /// callbacks feed.
@@ -34,7 +33,7 @@ mod imp {
     /// Runs on a binder thread — must not block or throw.
     #[no_mangle]
     pub extern "C" fn Java_com_bst_noid_NoidNative_onNetworkChangedNative(
-        _env: jni::JNIEnv,
+        _env: jni::EnvUnowned,
         _class: jni::objects::JClass,
     ) {
         if let Some(tx) = NETWORK_TX.get() {
@@ -48,11 +47,11 @@ mod imp {
     /// Tokio-attached threads (BootClassLoader cannot see app classes).
     #[no_mangle]
     pub extern "C" fn Java_com_bst_noid_NoidNative_onAppVisibilityChangedNative(
-        _env: jni::JNIEnv,
+        _env: jni::EnvUnowned,
         _class: jni::objects::JClass,
         visible: jni::sys::jboolean,
     ) {
-        APP_VISIBLE.store(visible != 0, std::sync::atomic::Ordering::Relaxed);
+        APP_VISIBLE.store(visible, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn app_visible() -> bool {

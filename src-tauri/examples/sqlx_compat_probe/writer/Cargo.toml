@@ -1,0 +1,24 @@
+[package]
+name = "noid-sqlx08-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "sqlx08-fixture"
+path = "../compat.rs"
+
+[dependencies]
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+aes-gcm = "0.10"
+anyhow = "1"
+base64 = "0.22"
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+rand = "0.10.3"
+sha2 = "0.10"
+zeroize = "1.7"

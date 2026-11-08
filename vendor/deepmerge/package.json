@@ -1,0 +1,9 @@
+{
+  "name": "deepmerge",
+  "version": "4.3.1-noid.1",
+  "description": "Noid's security-patched deepmerge 4.3.1 build-time fork",
+  "main": "index.cjs",
+  "license": "MIT",
+  "private": true,
+  "files": ["index.cjs", "LICENSE", "README.md"]
+}

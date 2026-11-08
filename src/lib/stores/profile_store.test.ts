@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 
 const { invokeMock, openMock, readFileMock, writeTextMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),

@@ -55,6 +55,17 @@ pub fn classify_peer_addr(addr: &Multiaddr, target: &PeerId) -> AddrClass {
             Protocol::P2pCircuit => {
                 circuits += 1;
             }
+            // Onion3 is terminal — a valid onion3 addr is classified by the
+            // canonical-form parser up front; anything carrying onion3 that
+            // fails the parser (extra protos, port 0, wrong shape) is
+            // malformed rather than a weird direct path.
+            Protocol::Onion3(_) => {
+                return if crate::p2p::tor::onion_addr::parse(addr).is_some() {
+                    AddrClass::Onion3
+                } else {
+                    AddrClass::Malformed
+                };
+            }
             Protocol::P2p(id) => p2p_ids.push(id),
             Protocol::Ip4(v4) => {
                 if scope.is_none() {

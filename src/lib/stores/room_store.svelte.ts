@@ -1,4 +1,4 @@
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   getRoomInfo,
@@ -17,9 +17,9 @@ import {
   declineRoomInvite,
   type RoomDetails,
   type PendingRoomInvite,
-} from "$lib/services/room_service";
-import { approveRoomMember } from "$lib/services/settings_service";
-import { pickImageDataUrl } from "$lib/utils/image";
+} from "#lib/services/room_service";
+import { approveRoomMember } from "#lib/services/settings_service";
+import { pickImageDataUrl } from "#lib/utils/image";
 import { uiStore } from "./ui_store.svelte";
 
 let rooms = $state<[string, string][]>([]);

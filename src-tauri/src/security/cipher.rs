@@ -8,7 +8,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use x25519_dalek::{x25519, PublicKey, StaticSecret};
 
@@ -34,7 +34,7 @@ pub struct DHTCipher {
 impl DHTCipher {
     /// Генерация новой пары ключей
     pub fn new() -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let private_key = StaticSecret::random_from_rng(&mut rng);
         let public_key = PublicKey::from(&private_key);
         
@@ -133,12 +133,12 @@ impl DHTCipher {
         
         // Генерация случайной nonce
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
         
         // Шифрование AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&shared_secret)?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher.encrypt(nonce, plaintext)?;
+        let nonce = Nonce::from(nonce_bytes);
+        let ciphertext = cipher.encrypt(&nonce, plaintext)?;
         
         Ok(DHTEncryptedMessage {
             nonce: nonce_bytes,
@@ -172,8 +172,8 @@ impl DHTCipher {
 
         // Дешифрование AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&shared_secret)?;
-        let nonce = Nonce::from_slice(&encrypted.nonce);
-        let plaintext = cipher.decrypt(nonce, encrypted.ciphertext.as_slice())?;
+        let nonce = Nonce::from(encrypted.nonce);
+        let plaintext = cipher.decrypt(&nonce, encrypted.ciphertext.as_slice())?;
 
         Ok(plaintext)
     }
@@ -186,7 +186,7 @@ impl DHTCipher {
 /// means the peer's point is low-order.
 pub fn is_low_order_x25519(key_bytes: &[u8; 32]) -> bool {
     let peer = PublicKey::from(*key_bytes);
-    let probe = StaticSecret::random_from_rng(rand::thread_rng());
+    let probe = StaticSecret::random_from_rng(&mut rand::rng());
     !probe.diffie_hellman(&peer).was_contributory()
 }
 

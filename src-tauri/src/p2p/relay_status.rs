@@ -36,4 +36,11 @@ pub struct RelayStatus {
     pub known_relays: usize,
     /// Peers we are currently connected to — grows as circles merge.
     pub peers_connected: usize,
+    /// External QUIC address maintained by 20s STUN PersistentKeepalive.
+    #[serde(default)]
+    pub stun_addr: Option<String>,
+    /// Detailed NAT mapping mode: `"public_port_mapped"` | `"stun_cone"` |
+    /// `"stun_symmetric"` | `"stun_mapped"` | `"unknown"`.
+    #[serde(default)]
+    pub nat_mapping: String,
 }

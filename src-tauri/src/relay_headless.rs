@@ -153,7 +153,7 @@ fn init_relay(data_dir: &std::path::Path) -> Result<()> {
         Ok(p) if !p.is_empty() => (p, true),
         _ => {
             let mut bytes = [0u8; 32];
-            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+            rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
             (hex::encode(bytes), false)
         }
     };
@@ -359,8 +359,39 @@ pub async fn run(args: &[String]) -> anyhow::Result<()> {
         (!data_dir.join("relay_config.json").exists()).then_some(DEFAULT_RELAY_PORT)
     });
 
+    // `--tor-relay`: opt this headless node into embedded-Tor onion
+    // connectivity + onion-relay service. The flag IS the operator's
+    // consent (headless has no UI dialog): we persist consent_version and
+    // the relay opt-in, create the onion identity offline, and hand the
+    // supervisor to the node. Tight relay budgets apply via
+    // `to_onion_relay_config` — safe for metered/battery hosts.
+    let tor = if args.iter().any(|a| a == "--tor-relay") {
+        let tor = crate::p2p::tor::handle::TorHandle::new(data_dir.join("tor"));
+        match tor.ensure_identity(&master_key) {
+            Ok(onion) => println!("Onion identity: {onion}"),
+            Err(e) => log::warn!("Onion identity unavailable: {}", e),
+        }
+        let cfg_path = data_dir.join("tor").join("tor_config.json");
+        let mut cfg = crate::p2p::tor::config::load(&cfg_path).unwrap_or_default();
+        cfg.schema_version = crate::p2p::tor::config::TOR_CONFIG_SCHEMA_VERSION;
+        cfg.consent_version = 1;
+        cfg.onion_relay_enabled = true;
+        if let Err(e) = cfg.save(&cfg_path) {
+            log::warn!("Failed to persist tor config: {}", e);
+        }
+        if let Err(e) = tor
+            .set_desired(crate::p2p::tor::mode::TorMode::Additional, 1)
+            .await
+        {
+            log::warn!("Tor supervisor failed to start: {}", e);
+        }
+        Some(tor)
+    } else {
+        None
+    };
+
     let mut node =
-        P2PNode::new_relay_with_keys(&data_dir, local_key, dht_cipher, port, master_key).await?;
+        P2PNode::new_relay_with_keys(&data_dir, local_key, dht_cipher, port, master_key, tor).await?;
 
     // --external-addr /ip4/1.2.3.4/tcp/4001 — public address advertised to
     // clients (invites, kad provider records, RESERVE responses). Required

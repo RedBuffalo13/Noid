@@ -22,29 +22,15 @@
 //!
 //! # Usage
 //!
-//! This crate provides a [`async_io::Transport`] and [`tokio::Transport`], depending on
-//! the enabled features, which implement the [`libp2p_core::Transport`] trait for use as a
+//! This crate provides [`tokio::Transport`]
+//! which implement the [`libp2p_core::Transport`] trait for use as a
 //! transport with `libp2p-core` or `libp2p-swarm`.
 
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 
 mod provider;
+pub mod proxy;
 
-#[cfg(feature = "async-io")]
-pub use provider::async_io;
-
-#[cfg(feature = "tokio")]
-pub use provider::tokio;
-
-use futures::{future::Ready, prelude::*, stream::SelectAll};
-use futures_timer::Delay;
-use if_watch::IfEvent;
-use libp2p_core::{
-    multiaddr::{Multiaddr, Protocol},
-    transport::{DialOpts, ListenerId, PortUse, TransportError, TransportEvent},
-};
-use provider::{Incoming, Provider};
-use socket2::{Domain, Socket, Type};
 use std::{
     collections::{HashSet, VecDeque},
     io,
@@ -55,13 +41,28 @@ use std::{
     time::Duration,
 };
 
+use futures::{future::Ready, prelude::*, stream::SelectAll};
+use futures_timer::Delay;
+use if_watch::IfEvent;
+use libp2p_core::{
+    multiaddr::{Multiaddr, Protocol},
+    transport::{DialOpts, ListenerId, PortUse, TransportError, TransportEvent},
+};
+#[cfg(feature = "tokio")]
+pub use provider::tokio;
+use provider::{Incoming, Provider};
+use socket2::{Domain, Socket, Type};
+
 /// The configuration for a TCP/IP transport capability for libp2p.
 #[derive(Clone, Debug)]
 pub struct Config {
     /// TTL to set for opened sockets, or `None` to keep default.
     ttl: Option<u32>,
-    /// `TCP_NODELAY` to set for opened sockets, or `None` to keep default.
-    nodelay: Option<bool>,
+    /// `TCP_NODELAY` to set for opened sockets.
+    nodelay: bool,
+    /// `SO_LINGER` to set for opened sockets,
+    /// by default is `None`.
+    linger: Option<Duration>,
     /// Size of the listen backlog for listen sockets.
     backlog: u32,
 }
@@ -157,18 +158,16 @@ impl PortReuse {
 impl Config {
     /// Creates a new configuration for a TCP/IP transport:
     ///
-    ///   * Nagle's algorithm, i.e. `TCP_NODELAY`, is _enabled_.
-    ///     See [`Config::nodelay`].
-    ///   * Reuse of listening ports is _disabled_.
-    ///     See [`Config::port_reuse`].
-    ///   * No custom `IP_TTL` is set. The default of the OS TCP stack applies.
-    ///     See [`Config::ttl`].
-    ///   * The size of the listen backlog for new listening sockets is `1024`.
-    ///     See [`Config::listen_backlog`].
+    ///   * Nagle's algorithm is _disabled_, i.e. `TCP_NODELAY` _enabled_. See [`Config::nodelay`].
+    ///   * Reuse of listening ports is _disabled_. See [`Config::port_reuse`].
+    ///   * No custom `IP_TTL` is set. The default of the OS TCP stack applies. See [`Config::ttl`].
+    ///   * The size of the listen backlog for new listening sockets is `1024`. See
+    ///     [`Config::listen_backlog`].
     pub fn new() -> Self {
         Self {
             ttl: None,
-            nodelay: Some(false), // Disable Nagle's algorithm by default
+            nodelay: true, // Disable Nagle's algorithm by default.
+            linger: None,
             backlog: 1024,
         }
     }
@@ -181,7 +180,7 @@ impl Config {
 
     /// Configures the `TCP_NODELAY` option for new sockets.
     pub fn nodelay(mut self, value: bool) -> Self {
-        self.nodelay = Some(value);
+        self.nodelay = value;
         self
     }
 
@@ -191,15 +190,21 @@ impl Config {
         self
     }
 
+    /// Configures the `SO_LINGER` option for new sockets.
+    pub fn linger(mut self, duration: Option<Duration>) -> Self {
+        self.linger = duration;
+        self
+    }
+
     /// Configures port reuse for local sockets, which implies
     /// reuse of listening ports for outgoing connections to
     /// enhance NAT traversal capabilities.
     ///
     /// # Deprecation Notice
     ///
-    /// The new implementation works on a per-connaction basis, defined by the behaviour. This
-    /// removes the necessaity to configure the transport for port reuse, instead the behaviour
-    /// requiring this behaviour can decide wether to use port reuse or not.
+    /// The new implementation works on a per-connection basis, defined by the behaviour. This
+    /// removes the necessity to configure the transport for port reuse, instead the behaviour
+    /// requiring this behaviour can decide whether to use port reuse or not.
     ///
     /// The API to configure port reuse is part of [`Transport`] and the option can be found in
     /// [`libp2p_core::transport::DialOpts`].
@@ -207,7 +212,7 @@ impl Config {
     /// If [`PortUse::Reuse`] is enabled, the transport will try to reuse the local port of the
     /// listener. If that's not possible, i.e. there is no listener or the transport doesn't allow
     /// a direct control over ports, a new port (or the default behaviour) is used. If port reuse
-    /// is enabled for a connection, this option will be treated on a best-effor basis.
+    /// is enabled for a connection, this option will be treated on a best-effort basis.
     #[deprecated(
         since = "0.42.0",
         note = "This option does nothing now, since the port reuse policy is now decided on a per-connection basis by the behaviour. The function will be removed in a future release."
@@ -226,11 +231,14 @@ impl Config {
             socket.set_only_v6(true)?;
         }
         if let Some(ttl) = self.ttl {
-            socket.set_ttl(ttl)?;
+            socket.set_ttl_v4(ttl)?;
         }
-        if let Some(nodelay) = self.nodelay {
-            socket.set_nodelay(nodelay)?;
+
+        if self.linger.is_some() {
+            socket.set_linger(self.linger)?;
         }
+
+        socket.set_tcp_nodelay(self.nodelay)?;
         socket.set_reuse_address(true)?;
 
         // Keepalive: detect half-dead connections (expired NAT/CGNAT
@@ -289,7 +297,6 @@ impl Default for Config {
 /// You shouldn't need to use this type directly. Use one of the following instead:
 ///
 /// - [`tokio::Transport`]
-/// - [`async_io::Transport`]
 pub struct Transport<T>
 where
     T: Provider + Send,
@@ -299,8 +306,8 @@ where
     /// The configuration of port reuse when dialing.
     port_reuse: PortReuse,
     /// All the active listeners.
-    /// The [`ListenStream`] struct contains a stream that we want to be pinned. Since the `VecDeque`
-    /// can be resized, the only way is to use a `Pin<Box<>>`.
+    /// The [`ListenStream`] struct contains a stream that we want to be pinned. Since the
+    /// `VecDeque` can be resized, the only way is to use a `Pin<Box<>>`.
     listeners: SelectAll<ListenStream<T>>,
     /// Pending transport events to return from [`libp2p_core::Transport::poll`].
     pending_events:
@@ -318,7 +325,6 @@ where
     /// It is best to call this function through one of the type-aliases of this type:
     ///
     /// - [`tokio::Transport::new`]
-    /// - [`async_io::Transport::new`]
     pub fn new(config: Config) -> Self {
         Transport {
             config,
@@ -424,13 +430,19 @@ where
         };
         tracing::debug!(address=%socket_addr, "dialing address");
 
+        // Noid: when a proxy is configured, the socket connects to the
+        // proxy's address; the handshake then requests the real target.
+        // PortUse::Reuse binding is meaningless across a proxy hop — skip it.
+        let proxy_cfg = proxy::active_proxy();
+        let connect_addr = proxy_cfg.as_ref().map(|c| c.addr).unwrap_or(socket_addr);
+
         let socket = self
             .config
-            .create_socket(socket_addr, opts.port_use)
+            .create_socket(connect_addr, opts.port_use)
             .map_err(TransportError::Other)?;
 
         let bind_addr = match self.port_reuse.local_dial_addr(&socket_addr.ip()) {
-            Some(socket_addr) if opts.port_use == PortUse::Reuse => {
+            Some(socket_addr) if opts.port_use == PortUse::Reuse && proxy_cfg.is_none() => {
                 tracing::trace!(address=%addr, "Binding dial socket to listen socket address");
                 Some(socket_addr)
             }
@@ -446,17 +458,17 @@ where
 
             // [`Transport::dial`] should do no work unless the returned [`Future`] is polled. Thus
             // do the `connect` call within the [`Future`].
-            let socket = match (socket.connect(&socket_addr.into()), bind_addr) {
+            let socket = match (socket.connect(&connect_addr.into()), bind_addr) {
                 (Ok(()), _) => socket,
                 (Err(err), _) if err.raw_os_error() == Some(libc::EINPROGRESS) => socket,
                 (Err(err), _) if err.kind() == io::ErrorKind::WouldBlock => socket,
                 (Err(err), Some(bind_addr)) if err.kind() == io::ErrorKind::AddrNotAvailable  => {
                     // The socket was bound to a local address that is no longer available.
                     // Retry without binding.
-                    tracing::debug!(connect_addr = %socket_addr, ?bind_addr, "Failed to connect using existing socket because we already have a connection, re-dialing with new port");
+                    tracing::debug!(connect_addr = %connect_addr, ?bind_addr, "Failed to connect using existing socket because we already have a connection, re-dialing with new port");
                     std::mem::drop(socket);
-                    let socket = local_config.create_socket(socket_addr, PortUse::New)?;
-                    match socket.connect(&socket_addr.into()) {
+                    let socket = local_config.create_socket(connect_addr, PortUse::New)?;
+                    match socket.connect(&connect_addr.into()) {
                         Ok(()) => socket,
                         Err(err) if err.raw_os_error() == Some(libc::EINPROGRESS) => socket,
                         Err(err) if err.kind() == io::ErrorKind::WouldBlock => socket,
@@ -466,7 +478,14 @@ where
                 (Err(err), _) => return Err(err),
             };
 
-            let stream = T::new_stream(socket.into()).await?;
+            let mut stream = T::new_stream(socket.into()).await?;
+
+            // Noid: proxy handshake runs on the established stream before it
+            // is returned — noise/WS upgrades then see a tunneled stream.
+            if let Some(cfg) = &proxy_cfg {
+                proxy::handshake(&mut stream, socket_addr, cfg).await?;
+            }
+
             Ok(stream)
         }
         .boxed())
@@ -523,7 +542,8 @@ where
     pause: Option<Delay>,
     /// Pending event to reported.
     pending_event: Option<<Self as Stream>::Item>,
-    /// The listener can be manually closed with [`Transport::remove_listener`](libp2p_core::Transport::remove_listener).
+    /// The listener can be manually closed with
+    /// [`Transport::remove_listener`](libp2p_core::Transport::remove_listener).
     is_closed: bool,
     /// The stream must be awaken after it has been closed to deliver the last event.
     close_listener_waker: Option<Waker>,
@@ -679,7 +699,8 @@ where
         }
 
         if self.is_closed {
-            // Terminate the stream if the listener closed and all remaining events have been reported.
+            // Terminate the stream if the listener closed
+            // and all remaining events have been reported.
             return Poll::Ready(None);
         }
 
@@ -761,15 +782,15 @@ fn ip_to_multiaddr(ip: IpAddr, port: u16) -> Multiaddr {
     Multiaddr::empty().with(ip.into()).with(Protocol::Tcp(port))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
-    use super::*;
     use futures::{
         channel::{mpsc, oneshot},
         future::poll_fn,
     };
-    use libp2p_core::Endpoint;
-    use libp2p_core::Transport as _;
+    use libp2p_core::{Endpoint, Transport as _};
+
+    use super::*;
 
     #[test]
     fn multiaddr_to_tcp_conversion() {
@@ -871,30 +892,17 @@ mod tests {
         }
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let listener = listener::<async_io::Tcp>(addr.clone(), ready_tx);
-                let dialer = dialer::<async_io::Tcp>(ready_rx);
-                let listener = async_std::task::spawn(listener);
-                async_std::task::block_on(dialer);
-                async_std::task::block_on(listener);
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let listener = listener::<tokio::Tcp>(addr, ready_tx);
-                let dialer = dialer::<tokio::Tcp>(ready_rx);
-                let rt = ::tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                let tasks = ::tokio::task::LocalSet::new();
-                let listener = tasks.spawn_local(listener);
-                tasks.block_on(&rt, dialer);
-                tasks.block_on(&rt, listener).unwrap();
-            }
+            let (ready_tx, ready_rx) = mpsc::channel(1);
+            let listener = listener::<tokio::Tcp>(addr, ready_tx);
+            let dialer = dialer::<tokio::Tcp>(ready_rx);
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            let tasks = ::tokio::task::LocalSet::new();
+            let listener = tasks.spawn_local(listener);
+            tasks.block_on(&rt, dialer);
+            tasks.block_on(&rt, listener).unwrap();
         }
 
         test("/ip4/127.0.0.1/tcp/0".parse().unwrap());
@@ -951,30 +959,17 @@ mod tests {
         }
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let listener = listener::<async_io::Tcp>(addr.clone(), ready_tx);
-                let dialer = dialer::<async_io::Tcp>(ready_rx);
-                let listener = async_std::task::spawn(listener);
-                async_std::task::block_on(dialer);
-                async_std::task::block_on(listener);
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let listener = listener::<tokio::Tcp>(addr, ready_tx);
-                let dialer = dialer::<tokio::Tcp>(ready_rx);
-                let rt = ::tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                let tasks = ::tokio::task::LocalSet::new();
-                let listener = tasks.spawn_local(listener);
-                tasks.block_on(&rt, dialer);
-                tasks.block_on(&rt, listener).unwrap();
-            }
+            let (ready_tx, ready_rx) = mpsc::channel(1);
+            let listener = listener::<tokio::Tcp>(addr, ready_tx);
+            let dialer = dialer::<tokio::Tcp>(ready_rx);
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            let tasks = ::tokio::task::LocalSet::new();
+            let listener = tasks.spawn_local(listener);
+            tasks.block_on(&rt, dialer);
+            tasks.block_on(&rt, listener).unwrap();
         }
 
         test("/ip4/0.0.0.0/tcp/0".parse().unwrap());
@@ -1068,32 +1063,18 @@ mod tests {
         }
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let (port_reuse_tx, port_reuse_rx) = oneshot::channel();
-                let listener = listener::<async_io::Tcp>(addr.clone(), ready_tx, port_reuse_rx);
-                let dialer = dialer::<async_io::Tcp>(addr.clone(), ready_rx, port_reuse_tx);
-                let listener = async_std::task::spawn(listener);
-                async_std::task::block_on(dialer);
-                async_std::task::block_on(listener);
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let (ready_tx, ready_rx) = mpsc::channel(1);
-                let (port_reuse_tx, port_reuse_rx) = oneshot::channel();
-                let listener = listener::<tokio::Tcp>(addr.clone(), ready_tx, port_reuse_rx);
-                let dialer = dialer::<tokio::Tcp>(addr, ready_rx, port_reuse_tx);
-                let rt = ::tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                let tasks = ::tokio::task::LocalSet::new();
-                let listener = tasks.spawn_local(listener);
-                tasks.block_on(&rt, dialer);
-                tasks.block_on(&rt, listener).unwrap();
-            }
+            let (ready_tx, ready_rx) = mpsc::channel(1);
+            let (port_reuse_tx, port_reuse_rx) = oneshot::channel();
+            let listener = listener::<tokio::Tcp>(addr.clone(), ready_tx, port_reuse_rx);
+            let dialer = dialer::<tokio::Tcp>(addr, ready_rx, port_reuse_tx);
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            let tasks = ::tokio::task::LocalSet::new();
+            let listener = tasks.spawn_local(listener);
+            tasks.block_on(&rt, dialer);
+            tasks.block_on(&rt, listener).unwrap();
         }
 
         test("/ip4/127.0.0.1/tcp/0".parse().unwrap());
@@ -1136,21 +1117,12 @@ mod tests {
         }
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let listener = listen_twice::<async_io::Tcp>(addr.clone());
-                async_std::task::block_on(listener);
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let listener = listen_twice::<tokio::Tcp>(addr);
-                let rt = ::tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                rt.block_on(listener);
-            }
+            let listener = listen_twice::<tokio::Tcp>(addr);
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            rt.block_on(listener);
         }
 
         test("/ip4/127.0.0.1/tcp/0".parse().unwrap());
@@ -1172,21 +1144,12 @@ mod tests {
         }
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let new_addr = async_std::task::block_on(listen::<async_io::Tcp>(addr.clone()));
-                assert!(!new_addr.to_string().contains("tcp/0"));
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let rt = ::tokio::runtime::Builder::new_current_thread()
-                    .enable_io()
-                    .build()
-                    .unwrap();
-                let new_addr = rt.block_on(listen::<tokio::Tcp>(addr));
-                assert!(!new_addr.to_string().contains("tcp/0"));
-            }
+            let rt = ::tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .unwrap();
+            let new_addr = rt.block_on(listen::<tokio::Tcp>(addr));
+            assert!(!new_addr.to_string().contains("tcp/0"));
         }
 
         test("/ip6/::1/tcp/0".parse().unwrap());
@@ -1200,17 +1163,8 @@ mod tests {
             .try_init();
 
         fn test(addr: Multiaddr) {
-            #[cfg(feature = "async-io")]
-            {
-                let mut tcp = async_io::Transport::default();
-                assert!(tcp.listen_on(ListenerId::next(), addr.clone()).is_err());
-            }
-
-            #[cfg(feature = "tokio")]
-            {
-                let mut tcp = tokio::Transport::default();
-                assert!(tcp.listen_on(ListenerId::next(), addr).is_err());
-            }
+            let mut tcp = tokio::Transport::default();
+            assert!(tcp.listen_on(ListenerId::next(), addr).is_err());
         }
 
         test("/ip4/127.0.0.1/tcp/12345/tcp/12345".parse().unwrap());
@@ -1228,11 +1182,6 @@ mod tests {
             tcp.listen_on(listener_id, "/ip4/127.0.0.1/tcp/0".parse().unwrap())
                 .unwrap();
             tcp.remove_listener(listener_id)
-        }
-
-        #[cfg(feature = "async-io")]
-        {
-            assert!(async_std::task::block_on(cycle_listeners::<async_io::Tcp>()));
         }
 
         #[cfg(feature = "tokio")]
@@ -1264,12 +1213,6 @@ mod tests {
                 format!("/ip6/::/tcp/{port}").parse().unwrap(),
             )
             .unwrap();
-        }
-        #[cfg(feature = "async-io")]
-        {
-            async_std::task::block_on(async {
-                test::<async_io::Tcp>();
-            })
         }
         #[cfg(feature = "tokio")]
         {

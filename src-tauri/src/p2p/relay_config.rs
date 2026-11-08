@@ -128,6 +128,25 @@ impl RelayConfig {
         cfg
     }
 
+    /// P5: onion-relay budget profile — tight caps for serving circuits
+    /// over Tor on a mobile/battery device. Deliberately narrower than the
+    /// WAN relay profile: an Android relay must never drain the battery or
+    /// the metered quota carrying other peers' traffic.
+    ///   - ≤4 reservations, ≤2 circuits total
+    ///   - ≤1 MiB/s-equivalent per circuit: 32 MiB total bytes
+    ///   - ≤30 min circuit + reservation lifetime
+    pub fn to_onion_relay_config(&self) -> libp2p::relay::Config {
+        let mut cfg = self.to_libp2p_config();
+        cfg.max_reservations = 4;
+        cfg.max_reservations_per_peer = 1;
+        cfg.reservation_duration = Duration::from_secs(30 * 60);
+        cfg.max_circuits = 2;
+        cfg.max_circuits_per_peer = 1;
+        cfg.max_circuit_duration = Duration::from_secs(30 * 60);
+        cfg.max_circuit_bytes = 32 << 20; // 32 MiB
+        cfg
+    }
+
     /// Load `relay_config.json` from `config_dir`; fall back to defaults.
     pub fn load(config_dir: &Path) -> Self {
         let path = config_dir.join("relay_config.json");

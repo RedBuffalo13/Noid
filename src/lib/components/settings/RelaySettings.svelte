@@ -7,17 +7,23 @@
     setNodeRole,
     setPrivacyMode,
     onRelayStatus,
-  } from "$lib/services/relay_service";
-  import { getMyInvite } from "$lib/services/contact_service";
-  import type { NodeRole, PrivacyMode, RelayConfig, RelayStatus } from "$lib/relay";
-  import { t } from "$lib/i18n/index.svelte";
+  } from "#lib/services/relay_service";
+  import { getMyInvite } from "#lib/services/contact_service";
+  import { getTorStatus, onTorStatus, type TorStatus } from "#lib/services/tor_service";
+  import type { NodeRole, PrivacyMode, RelayConfig, RelayStatus } from "#lib/relay";
+  import { t } from "#lib/i18n/index.svelte";
 
   let config = $state<RelayConfig | null>(null);
   let status = $state<RelayStatus | null>(null);
+  // In tor_only there are no direct sockets — STUN/NAT can never resolve,
+  // so the honest labels come from the Tor status, not the WAN status.
+  let torStatus = $state<TorStatus | null>(null);
+  let onionOnly = $derived(torStatus?.effective_mode === "tor_only");
   let invite = $state<string>("");
   let inviteCopied = $state(false);
   let error = $state<string>("");
   let unlisten: UnlistenFn | null = null;
+  let unlistenTor: UnlistenFn | null = null;
 
   const natKeys: Record<string, string> = {
     unknown: "relay.nat.unknown",
@@ -25,9 +31,23 @@
     private: "relay.nat.private",
   };
 
+  const natMapKeys: Record<string, string> = {
+    public_port_mapped: "relay.natmap.public_port_mapped",
+    stun_cone: "relay.natmap.stun_cone",
+    stun_symmetric: "relay.natmap.stun_symmetric",
+    stun_mapped: "relay.natmap.stun_mapped",
+    unknown: "relay.natmap.unknown",
+  };
+
   onMount(async () => {
     try {
       [config, status] = await Promise.all([getRelayConfig(), getRelayStatus()]);
+      try {
+        torStatus = await getTorStatus();
+        // Live Tor updates drive the "Onion only"/"Onion relaying" rows —
+        // no need to leave the settings screen to see them change.
+        unlistenTor = await onTorStatus((s) => { torStatus = s; });
+      } catch { /* feature absent — keep WAN labels */ }
       unlisten = await onRelayStatus((s) => {
         status = s;
         refreshInvite();
@@ -40,6 +60,7 @@
 
   onDestroy(() => {
     unlisten?.();
+    unlistenTor?.();
   });
 
   async function changeRole(role: NodeRole) {
@@ -132,13 +153,27 @@
       <div class="status-row">
         <span class="status-label">{t("relay.nat")}</span>
         <span class="status-value" class:status-ok={status.natStatus === "public"}>
-          {t((natKeys[status.natStatus] ?? "relay.nat.unknown") as never)}
+          {onionOnly
+            ? t("relay.nat.onion_only")
+            : t((natKeys[status.natStatus] ?? "relay.nat.unknown") as never)}
         </span>
       </div>
+      {#if status.natMapping && status.natMapping !== "unknown"}
+        <div class="status-row">
+          <span class="status-label">{t("relay.natMapping")}</span>
+          <span class="status-value">{t((natMapKeys[status.natMapping] ?? "relay.natmap.unknown") as never)}</span>
+        </div>
+      {/if}
       <div class="status-row">
         <span class="status-label">{t("relay.relaying")}</span>
         <span class="status-value">{status.isRelaying ? t("relay.relaying.on") : t("relay.relaying.off")}</span>
       </div>
+      {#if torStatus?.relay_enabled}
+        <div class="status-row">
+          <span class="status-label">{t("relay.onion_relay")}</span>
+          <span class="status-value">{torStatus.relay_active ? t("relay.relaying.on") : t("relay.relaying.off")}</span>
+        </div>
+      {/if}
       <div class="status-row">
         <span class="status-label">{t("relay.peers")}</span>
         <span class="status-value">{status.peersConnected}</span>

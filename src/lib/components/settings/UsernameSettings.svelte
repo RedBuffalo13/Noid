@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { usernameStore } from "$lib/stores/username_store.svelte";
-  import { chatStore } from "$lib/stores/chat_store.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { usernameStore } from "#lib/stores/username_store.svelte";
+  import { chatStore } from "#lib/stores/chat_store.svelte";
+  import { t } from "#lib/i18n/index.svelte";
 
   let localUsername = $state("");
   // FE-26: seed from the store ONCE — re-writing on every store refresh

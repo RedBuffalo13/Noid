@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { roomStore, contactStore, uiStore } from "$lib/stores";
-  import { formatId } from "$lib/utils/format";
-  import { t } from "$lib/i18n/index.svelte";
+  import { roomStore, contactStore, uiStore } from "#lib/stores";
+  import { formatId } from "#lib/utils/format";
+  import { t } from "#lib/i18n/index.svelte";
 
   let editName = $state("");
   let confirmDelete = $state(false);

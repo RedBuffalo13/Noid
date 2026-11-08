@@ -14,6 +14,18 @@ pub async fn connect_to_addr(
 ) -> Result<String, String> {
     let parsed = invite::parse_invite(&input)?;
 
+    // P4 consent preflight: an invite carrying onion3 hints needs the Tor
+    // transport to reach the peer. With Tor unsupported or still off the
+    // dial would silently fail — tell the UI consent is required instead.
+    let has_onion = parsed.addrs.iter().any(|a| {
+        a.parse::<libp2p::Multiaddr>()
+            .map(|m| crate::p2p::tor::onion_addr::is_onion(&m))
+            .unwrap_or(false)
+    });
+    if has_onion && !state.tor.running() {
+        return Err("tor_consent_required".to_string());
+    }
+
     if let Some(tx) = state.p2p() {
         for addr in &parsed.addrs {
             crate::send_p2p_cmd(&tx, P2PCommand::DialAddress { addr: addr.clone() })

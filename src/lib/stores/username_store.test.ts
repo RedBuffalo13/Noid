@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 
-vi.mock("$lib/services/username_service", () => ({
+vi.mock("#lib/services/username_service", () => ({
   setUsername: vi.fn(),
   checkUsername: vi.fn(),
   lookupUser: vi.fn(),
@@ -9,7 +9,7 @@ vi.mock("$lib/services/username_service", () => ({
   getUsername: vi.fn(),
 }));
 
-vi.mock("$lib/services", () => ({
+vi.mock("#lib/services", () => ({
   sendContactRequest: vi.fn(),
 }));
 
@@ -24,8 +24,8 @@ import {
   lookupUser,
   lookupByPeerId,
   getUsername,
-} from "$lib/services/username_service";
-import { sendContactRequest } from "$lib/services";
+} from "#lib/services/username_service";
+import { sendContactRequest } from "#lib/services";
 import { uiStore } from "./ui_store.svelte";
 
 describe("username_store", () => {

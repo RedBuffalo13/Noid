@@ -1,7 +1,7 @@
-import { t } from "$lib/i18n/index.svelte";
-import { getChatMessages as svcGetChatMessages, getNewMessagesSince as svcGetNewMessagesSince, getAllMissedMessages as svcGetAllMissedMessages, sendChatMessage as svcSendChatMessage, sendTypingIndicator as svcSendTypingIndicator, getPendingMessageIds as svcGetPendingMessageIds, deleteChat as svcDeleteChat } from "$lib/services";
+import { t } from "#lib/i18n/index.svelte";
+import { getChatMessages as svcGetChatMessages, getNewMessagesSince as svcGetNewMessagesSince, getAllMissedMessages as svcGetAllMissedMessages, sendChatMessage as svcSendChatMessage, sendTypingIndicator as svcSendTypingIndicator, getPendingMessageIds as svcGetPendingMessageIds, deleteChat as svcDeleteChat } from "#lib/services";
 import { tick } from "svelte";
-import type { Message } from "$lib/types";
+import type { Message } from "#lib/types";
 import { SvelteMap } from "svelte/reactivity";
 import { uiStore } from "./ui_store.svelte";
 

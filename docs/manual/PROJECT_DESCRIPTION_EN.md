@@ -59,6 +59,35 @@ sequenceDiagram
   R->>R: decrypt → persist → ack → delete from outbox
 ```
 
+## Embedded Tor (v0.2.0)
+
+An Arti 0.48 client (the official Rust Tor implementation) runs inside
+the same binary — no external tor daemon, no Orbot, no proxy settings.
+
+- **Identity**: a stable `.onion` address derived from a persistent
+  ed25519 hsid key in the encrypted keystore (AES-256-GCM, domain
+  `tor-keystore`); survives reinstalls, created offline at PIN login —
+  no socket is opened before consent.
+- **Modes** (`Settings → Tor`, persisted in `tor_config.json`):
+  `off` (default — ordinary networking), `additional` (onion alongside
+  direct transports), `tor_only` (onion-only, fail-closed — direct
+  listeners are not created at all).
+- **Transport**: `/onion3/` multiaddr dialed/listened through the
+  embedded client; Noise + Yamux multiplexing on top — the same
+  authenticated stream as every other transport.
+- **Invites**: `get_my_invite` appends the `/onion3/…:4020/p2p/<id>`
+  endpoint automatically when the service is live; receivers dial every
+  listed address — libp2p deduplicates by PeerId.
+- **Relay**: onion-relay opt-in is a separate switch + separate
+  metered-traffic consent on Android; `/p2p-circuit` reservations can
+  ride on onion transports.
+- **Supervision**: generation-owned client/service with bounded
+  shutdown, deduplicated rebuilds, `tor-status` event stream to the UI;
+  vendored arti-client patch turns the protocol-fatal `exit(1)` into a
+  dormant failure the supervisor can tear down.
+- **Limitation**: on networks with Tor DPI filtering the client needs
+  an external VPN or bridges (pluggable transports — planned).
+
 ## Current state — interim stable (`noid_stable_2610`, 2026-10-27)
 
 Verified live on updated Windows ↔ VPS builds:

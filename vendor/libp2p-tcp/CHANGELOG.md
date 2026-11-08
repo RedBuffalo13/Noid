@@ -1,3 +1,24 @@
+## 0.45.0
+
+- Raise MSRV to 1.88.0.
+  See [PR 6273](https://github.com/libp2p/rust-libp2p/pull/6273).
+
+## 0.44.1
+- Expose `socket2`'s `set_linger` config option.
+  See [PR 6225](https://github.com/libp2p/rust-libp2p/pull/5955)
+
+## 0.44.0
+
+- Remove `async-std` support.
+  See [PR 5955](https://github.com/libp2p/rust-libp2p/pull/5955)
+
+## 0.43.0
+
+- Fix the disabling of Nagle's algorithm, which requires setting `TCP_NODELAY` to _true_.
+  See [PR 5764](https://github.com/libp2p/rust-libp2p/pull/5764)
+
+<!-- Update to libp2p-core v0.43.0 -->
+
 ## 0.42.0
 
 - Implement refactored `Transport`.

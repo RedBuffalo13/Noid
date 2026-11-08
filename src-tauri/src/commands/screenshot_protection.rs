@@ -1,7 +1,7 @@
+use crate::AppState;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use tauri::Manager;
 use tauri::State;
-use crate::AppState;
 
 #[tauri::command]
 #[allow(unused_variables)]
@@ -154,40 +154,49 @@ pub async fn disable_screenshot_protection(
 fn android_set_secure(enabled: bool) -> Result<(), String> {
     use jni::objects::{JObject, JValue};
     let ctx = ndk_context::android_context();
-    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut _) }
-        .map_err(|e| format!("JavaVM: {}", e))?;
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|e| format!("attach thread: {}", e))?;
-    let context = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
-    // AN-02: a Tokio-attached thread has no Java frames — find_class /
-    // call_static_method by name resolves through the BootClassLoader,
-    // which cannot see app classes and always throws
-    // ClassNotFoundException. Load the class through the CONTEXT's
-    // ClassLoader instead — it is the app's own loader.
-    let loader = env
-        .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-        .and_then(|v| v.l())
-        .map_err(|e| format!("getClassLoader: {}", e))?;
-    let name = env
-        .new_string("com.bst.noid.NoidNative")
-        .map_err(|e| format!("new_string: {}", e))?;
-    let cls = env
-        .call_method(
-            loader,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
-            &[JValue::Object(&name)],
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut _) };
+    vm.attach_current_thread_for_scope(|env| -> anyhow::Result<()> {
+        let raw_context = ctx.context() as jni::sys::jobject;
+        // The NDK context is runtime-owned; borrow it without taking ownership
+        // or pretending that its global reference belongs to this local frame.
+        let context = unsafe { env.as_cast_raw::<JObject>(&raw_context) }?;
+        // AN-02: a Tokio-attached thread has no Java frames — find_class /
+        // call_static_method by name resolves through the BootClassLoader,
+        // which cannot see app classes and always throws
+        // ClassNotFoundException. Load the class through the CONTEXT's
+        // ClassLoader instead — it is the app's own loader.
+        let loader = env
+            .call_method(
+                &context,
+                jni::jni_str!("getClassLoader"),
+                jni::jni_sig!("()Ljava/lang/ClassLoader;"),
+                &[],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| anyhow::anyhow!("getClassLoader: {}", e))?;
+        let name = env
+            .new_string("com.bst.noid.NoidNative")
+            .map_err(|e| anyhow::anyhow!("new_string: {}", e))?;
+        let cls = env
+            .call_method(
+                &loader,
+                jni::jni_str!("loadClass"),
+                jni::jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
+                &[JValue::Object(&name)],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| anyhow::anyhow!("loadClass NoidNative: {}", e))?;
+        let cls = env
+            .cast_local::<jni::objects::JClass>(cls)
+            .map_err(|e| anyhow::anyhow!("cast JClass: {}", e))?;
+        env.call_static_method(
+            cls,
+            jni::jni_str!("setSecure"),
+            jni::jni_sig!("(Landroid/content/Context;Z)V"),
+            &[JValue::Object(&context), JValue::Bool(enabled)],
         )
-        .and_then(|v| v.l())
-        .map_err(|e| format!("loadClass NoidNative: {}", e))?;
-    let cls: &jni::objects::JClass = (&cls).into();
-    env.call_static_method(
-        cls,
-        "setSecure",
-        "(Landroid/content/Context;Z)V",
-        &[JValue::Object(&context), JValue::Bool(enabled as u8)],
-    )
-    .map_err(|e| format!("JNI setSecure: {}", e))?;
-    Ok(())
+        .map_err(|e| anyhow::anyhow!("JNI setSecure: {}", e))?;
+        Ok(())
+    })
+    .map_err(|e| e.to_string())
 }

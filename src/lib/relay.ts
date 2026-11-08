@@ -34,4 +34,8 @@ export interface RelayStatus {
   activeCircuits: number;
   knownRelays: number;
   peersConnected: number;
+  /** External QUIC addr kept alive by the 20s STUN PersistentKeepalive. */
+  stunAddr?: string | null;
+  /** NAT mapping mode: "public_port_mapped" | "stun_cone" | "stun_symmetric" | "stun_mapped" | "unknown". */
+  natMapping?: string;
 }

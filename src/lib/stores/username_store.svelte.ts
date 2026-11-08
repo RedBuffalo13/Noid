@@ -1,14 +1,14 @@
-import { t } from "$lib/i18n/index.svelte";
+import { t } from "#lib/i18n/index.svelte";
 import {
   setUsername as svcSetUsername,
   checkUsername as svcCheckUsername,
   lookupUser as svcLookupUser,
   lookupByPeerId as svcLookupByPeerId,
   getUsername as svcGetUsername,
-} from "$lib/services/username_service";
-import { sendContactRequest } from "$lib/services";
+} from "#lib/services/username_service";
+import { sendContactRequest } from "#lib/services";
 import { uiStore } from "./ui_store.svelte";
-import type { UserRecord, UserSearchResult } from "$lib/types";
+import type { UserRecord, UserSearchResult } from "#lib/types";
 
 let username = $state<string | null>(null);
 let isPublished = $state(false);

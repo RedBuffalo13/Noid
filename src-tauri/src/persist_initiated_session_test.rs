@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use rand::RngCore;
+use rand::Rng;
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::timeout;
 use x25519_dalek::StaticSecret;
@@ -16,7 +16,7 @@ use crate::security::RatchetSessionManager;
 async fn initiated_session_persistence_releases_global_db_lock() -> Result<()> {
     let (mut db, _dir) = setup_test_db().await?;
     let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     db.attach_cipher(Arc::new(FieldCipher::new(key))).await?;
     let (remote_db, _remote_dir) = setup_test_db().await?;
     let sessions = Arc::new(RatchetSessionManager::init_from_db(&db).await?);

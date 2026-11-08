@@ -1,7 +1,7 @@
 <script lang="ts">
   // Language picker — custom i18n (no dependency): EN default, RU optional.
-  import { i18n, t } from "$lib/i18n/index.svelte";
-  import type { Locale } from "$lib/i18n/index.svelte";
+  import { i18n, t } from "#lib/i18n/index.svelte";
+  import type { Locale } from "#lib/i18n/index.svelte";
 
   const langs: { id: Locale; labelKey: "settings.language.en" | "settings.language.ru" }[] = [
     { id: "en", labelKey: "settings.language.en" },

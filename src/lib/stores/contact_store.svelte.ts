@@ -1,6 +1,6 @@
-import { t } from "$lib/i18n/index.svelte";
-import { getContacts as svcGetContacts, getContactRequests as svcGetContactRequests, validatePeerId as svcValidatePeerId, sendContactRequest as svcSendContactRequest, acceptContactRequest as svcAcceptContactRequest, denyContactRequest as svcDenyContactRequest, removeContact as svcRemoveContact, getChatMessages as svcGetChatMessages } from "$lib/services";
-import type { Chat } from "$lib/types";
+import { t } from "#lib/i18n/index.svelte";
+import { getContacts as svcGetContacts, getContactRequests as svcGetContactRequests, validatePeerId as svcValidatePeerId, sendContactRequest as svcSendContactRequest, acceptContactRequest as svcAcceptContactRequest, denyContactRequest as svcDenyContactRequest, removeContact as svcRemoveContact, getChatMessages as svcGetChatMessages } from "#lib/services";
+import type { Chat } from "#lib/types";
 import { SvelteSet } from "svelte/reactivity";
 import { uiStore } from "./ui_store.svelte";
 import { chatStore } from "./chat_store.svelte";

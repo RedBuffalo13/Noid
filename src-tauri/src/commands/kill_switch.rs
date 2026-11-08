@@ -35,6 +35,12 @@ pub async fn kill_switch(pin: String, state: State<'_, AppState>) -> Result<Auth
         // retry workers) aborts instead of writing into the wiped session.
         state.login_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::gate_set(&state.p2p_start_tx, false);
+        // Stop the Tor generation before wiping its keys — the supervisor's
+        // bounded barrier drops client/service/tasks so no Tor writer
+        // outlives the wipe.
+        if let Err(e) = state.tor.stop().await {
+            log::error!("Tor shutdown before wipe failed: {}", e);
+        }
         // Give the abort + pool drop a moment so secure_delete does not hit
         // file locks on Windows.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

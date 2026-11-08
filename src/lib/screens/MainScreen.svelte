@@ -1,16 +1,21 @@
 <script lang="ts">
-  import { uiStore, chatStore, contactStore, profileStore, folderStore, usernameStore, roomStore } from "$lib/stores";
-  import { formatId, formatTimestamp } from "$lib/utils/format";
-  import { t, i18n } from "$lib/i18n/index.svelte";
-  import { sendFile, createRoom, joinRoom, sendRoomMessage, inviteToRoom, getRoomMessages } from "$lib/services";
-  import { getLastSyncTime } from "$lib/services";
-  import SharedFoldersPanel from "$lib/components/settings/SharedFoldersPanel.svelte";
-  import UsernameSettings from "$lib/components/settings/UsernameSettings.svelte";
-  import RelaySettings from "$lib/components/settings/RelaySettings.svelte";
-  import RoomSettings from "$lib/components/settings/RoomSettings.svelte";
-  import UserSearch from "$lib/components/search/UserSearch.svelte";
-  import NotificationSettings from "$lib/components/settings/NotificationSettings.svelte";
-  import LanguageSettings from "$lib/components/settings/LanguageSettings.svelte";
+  import { tick } from "svelte";
+  import { uiStore, chatStore, contactStore, profileStore, folderStore, usernameStore, roomStore } from "#lib/stores";
+  import { formatId, formatTimestamp } from "#lib/utils/format";
+  import { t, i18n } from "#lib/i18n/index.svelte";
+  import { sendFile, createRoom, joinRoom, sendRoomMessage, inviteToRoom, getRoomMessages } from "#lib/services";
+  import { getLastSyncTime } from "#lib/services";
+  import SharedFoldersPanel from "#lib/components/settings/SharedFoldersPanel.svelte";
+  import UsernameSettings from "#lib/components/settings/UsernameSettings.svelte";
+  import RelaySettings from "#lib/components/settings/RelaySettings.svelte";
+  import ProxySettings from "#lib/components/settings/ProxySettings.svelte";
+  import TorSettings from "#lib/components/settings/TorSettings.svelte";
+  import NetworkStatusBar from "#lib/components/ui/NetworkStatusBar.svelte";
+  import TorStatusChip from "#lib/components/ui/TorStatusChip.svelte";
+  import RoomSettings from "#lib/components/settings/RoomSettings.svelte";
+  import UserSearch from "#lib/components/search/UserSearch.svelte";
+  import NotificationSettings from "#lib/components/settings/NotificationSettings.svelte";
+  import LanguageSettings from "#lib/components/settings/LanguageSettings.svelte";
 
   let roomId = $state("");
   let roomMsg = $state("");
@@ -77,6 +82,23 @@
       killPinInput = "";
     }
   };
+
+  // Message list scroll: land on the newest message when a dialog opens,
+  // and follow new messages only while the user is already near the bottom
+  // (no yanking during history reading).
+  let msgListEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    const msgs = chatStore.messages;
+    if (!msgListEl || msgs.length === 0) return;
+    const el = msgListEl;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    const justOpened = el.scrollTop === 0;
+    if (nearBottom || justOpened) {
+      tick().then(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
+  });
 
   const openChat = async (peerId: string) => {
     chatStore.currentPeer = peerId;
@@ -263,6 +285,8 @@
 </header>
 
 <main class="content-wrapper">
+  <NetworkStatusBar />
+  <TorStatusChip />
   {#if uiStore.subPage === "chats"}
     <div class="scroll-content">
       <span class="label">{t("chats.title")}</span>
@@ -336,6 +360,8 @@
       </div>
       <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:0;">
         <RelaySettings />
+        <ProxySettings />
+        <TorSettings />
       </div>
       <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:16px;">
         <LanguageSettings />
@@ -364,7 +390,7 @@
     </div>
   {:else if uiStore.subPage === "chat-view"}
     <div style="display:flex;flex-direction:column;height:100%;">
-      <div class="message-list" role="log" aria-live="polite" aria-label={t("chat.messages")}>
+      <div class="message-list" role="log" aria-live="polite" aria-label={t("chat.messages")} bind:this={msgListEl}>
         {#each chatStore.messages as msg}
           <div class="msg-bubble {msg.type}">
             <div class="msg-content">{msg.content}</div>
@@ -436,7 +462,7 @@
     </div>
   {:else if uiStore.subPage === "room-view"}
     <div style="display:flex;flex-direction:column;height:100%;">
-      <div class="message-list" role="log" aria-live="polite" aria-label={t("rooms.messages")}>
+      <div class="message-list" role="log" aria-live="polite" aria-label={t("rooms.messages")} bind:this={msgListEl}>
         {#each chatStore.messages as msg}
           <div class="msg-bubble {msg.type}">
             {#if msg.type === "received" && msg.from}

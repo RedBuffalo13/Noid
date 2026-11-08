@@ -6,7 +6,7 @@ use aes_gcm::{
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
-use rand::RngCore;
+use rand::Rng;
 
 const MAX_SKIP: u32 = 1000;
 /// Global bound on stored skipped message keys across ALL ratchet epochs —
@@ -62,7 +62,7 @@ pub struct RatchetMessage {
 
 impl DoubleRatchet {
     pub fn init_alice(shared_secret: [u8; 32], remote_public: PublicKey) -> Result<Self> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let dh_self_secret = StaticSecret::random_from_rng(&mut rng);
         let dh_self_public = PublicKey::from(&dh_self_secret);
 
@@ -119,8 +119,8 @@ impl DoubleRatchet {
             .map_err(|e| anyhow!("AES init error: {}", e))?;
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         // S5: header is built before encryption and bound as AEAD AAD —
         // a ciphertext cannot be re-attributed to a forged chain position.
@@ -132,7 +132,7 @@ impl DoubleRatchet {
         let aad = header_aad(&header);
 
         let ciphertext = cipher
-            .encrypt(nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
+            .encrypt(&nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
             .map_err(|e| anyhow!("Encryption error: {}", e))?;
 
         self.send_n += 1;
@@ -170,12 +170,12 @@ impl DoubleRatchet {
                 return Err(anyhow!("Ciphertext too short"));
             }
             let (nonce_bytes, ct) = message.ciphertext.split_at(12);
-            let nonce = Nonce::from_slice(nonce_bytes);
+            let nonce = Nonce::from(<[u8; 12]>::try_from(nonce_bytes)?);
             let cipher = Aes256Gcm::new_from_slice(&message_key)
                 .map_err(|e| anyhow!("AES init error: {}", e))?;
             let aad = header_aad(header);
             let plaintext = cipher
-                .decrypt(nonce, aes_gcm::aead::Payload { msg: ct, aad: &aad })
+                .decrypt(&nonce, aes_gcm::aead::Payload { msg: ct, aad: &aad })
                 .map_err(|e| anyhow!("Decryption error: {}", e))?;
             return Ok(plaintext);
             }
@@ -199,14 +199,14 @@ impl DoubleRatchet {
             return Err(anyhow!("Ciphertext too short"));
         }
         let (nonce_bytes, ct) = message.ciphertext.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::from(<[u8; 12]>::try_from(nonce_bytes)?);
 
         let cipher = Aes256Gcm::new_from_slice(&message_key)
             .map_err(|e| anyhow!("AES init error: {}", e))?;
 
         let aad = header_aad(header);
         let plaintext = cipher
-            .decrypt(nonce, aes_gcm::aead::Payload { msg: ct, aad: &aad })
+            .decrypt(&nonce, aes_gcm::aead::Payload { msg: ct, aad: &aad })
             .map_err(|e| anyhow!("Decryption error: {}", e))?;
 
         self.recv_n += 1;
@@ -240,7 +240,7 @@ impl DoubleRatchet {
             self.recv_chain_key = recv_chain_key;
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let new_secret = StaticSecret::random_from_rng(&mut rng);
         let new_public = PublicKey::from(&new_secret);
         self.dh_self_public = new_public;

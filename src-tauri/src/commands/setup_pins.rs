@@ -31,17 +31,40 @@ pub async fn setup_pins(
     let key = tokio::task::spawn_blocking(move || -> Result<Option<[u8; 32]>, String> {
         let mut security = security_arc.blocking_lock();
         if security.is_setup_complete() {
-            return Err("PINs are already configured".into());
+            // Idempotent resume: the UI wizard may have succeeded on the
+            // backend but failed to navigate (webview reload, toast lost,
+            // app restart). Retrying then must NOT strand the user on the
+            // wizard — accept the SAME true PIN as a no-op success; a
+            // different PIN is a real error (rotation would orphan data).
+            return match security.verify_true_pin(&true_pin) {
+                // Mirrors a fresh setup: master key derived, audit keyed.
+                Ok(true) => {
+                    security.derive_key(&true_pin).map_err(|e| e.to_string())?;
+                    Ok(security.get_master_key().ok())
+                }
+                Ok(false) => Err("PINs are already configured".into()),
+                Err(e) => Err(e.to_string()),
+            };
         }
         security.derive_key(&true_pin).map_err(|e| e.to_string())?;
         let key = security.get_master_key().ok();
-        // Phase 3.1: Save verified true_pin hash for login verification
-        security
-            .save_true_pin_hash(&true_pin)
-            .map_err(|e| e.to_string())?;
-        security
-            .set_kill_pin(&kill_pin)
-            .map_err(|e| e.to_string())?;
+        // Phase 3.1: Save verified true_pin hash for login verification.
+        // The two hash writes are independent Argon2 computations — run
+        // them on two threads so setup costs ~2 hashes, not 3.
+        let sec = &security;
+        std::thread::scope(|s| -> Result<(), String> {
+            let tp = true_pin.clone();
+            let th = s.spawn(move || sec.save_true_pin_hash(&tp));
+            let kp = kill_pin.clone();
+            let kh = s.spawn(move || sec.set_kill_pin(&kp));
+            th.join()
+                .map_err(|_| "hash thread panicked".to_string())?
+                .map_err(|e| e.to_string())?;
+            kh.join()
+                .map_err(|_| "hash thread panicked".to_string())?
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
         Ok(key)
     })
     .await

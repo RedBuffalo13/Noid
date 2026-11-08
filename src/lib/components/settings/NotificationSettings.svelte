@@ -7,9 +7,9 @@
     initializeNotifications,
     checkNotificationPermission,
     type NotificationSettings,
-  } from "$lib/notifications";
-  import { uiStore } from "$lib/stores/ui_store.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  } from "#lib/notifications";
+  import { uiStore } from "#lib/stores/ui_store.svelte";
+  import { t } from "#lib/i18n/index.svelte";
 
   let settings = $state<NotificationSettings>(getNotificationSettings());
   let permissionGranted = $state<boolean | null>(null);

@@ -17,7 +17,7 @@ pub async fn create_room(
     }
     let key = crate::security::room_crypto::RoomKey::generate();
     let mut id_bytes = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id_bytes);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut id_bytes);
     let room_id = hex::encode(id_bytes);
     let my_id = state.my_id.lock().await.clone();
     // The creator is recorded as the room owner — refuse to persist a

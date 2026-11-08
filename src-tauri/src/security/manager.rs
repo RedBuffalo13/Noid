@@ -7,15 +7,11 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use anyhow::{anyhow, Result};
-use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
-use rand::RngCore;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use rand::Rng;
 use std::fs;
 use std::path::PathBuf;
-use base64::Engine;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 pub struct SecurityManager {
     master_key: Option<[u8; 32]>,
@@ -38,7 +34,7 @@ impl SecurityManager {
             if salt_bytes.len() < 16 {
                 return Err(anyhow!("Salt file too short, possible corruption"));
             }
-            SaltString::from_b64(&base64::engine::general_purpose::STANDARD_NO_PAD.encode(&salt_bytes))?
+            salt_bytes
         } else {
             // Phase 3.7: If noid.db exists but salt.bin is missing, refuse to generate new salt
             let db_path = self.data_dir.join("noid.db");
@@ -51,10 +47,14 @@ impl SecurityManager {
                 ));
             }
             let mut salt_bytes = [0u8; 16];
-            rand::thread_rng().fill_bytes(&mut salt_bytes);
+            rand::rng().fill_bytes(&mut salt_bytes);
             std::fs::write(&salt_path, salt_bytes)?;
-            SaltString::from_b64(&base64::engine::general_purpose::STANDARD_NO_PAD.encode(salt_bytes))?
+            salt_bytes.to_vec()
         };
+        // Preserve the old PHC SaltString's maximum of 64 base64 characters.
+        if salt.len() > 48 {
+            return Err(anyhow!("Salt file too long, possible corruption"));
+        }
         // Phase 3.2: Use explicit Argon2id parameters (64MB, 3 iterations, 1 lane)
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
@@ -62,15 +62,11 @@ impl SecurityManager {
             argon2::Params::new(65536, 3, 1, None)
                 .map_err(|e| anyhow!("Argon2 params error: {}", e))?,
         );
-        let hash = argon2
-            .hash_password(pin.as_bytes(), &salt)
+        let mut key = Zeroizing::new([0u8; 32]);
+        argon2
+            .hash_password_into(pin.as_bytes(), &salt, key.as_mut())
             .map_err(|e| anyhow!("KDF error: {}", e))?;
-
-        let mut key = [0u8; 32];
-        let hash_output = hash.hash.ok_or_else(|| anyhow!("No hash output"))?;
-        key.copy_from_slice(&hash_output.as_ref()[..32]);
-
-        self.master_key = Some(key);
+        self.set_master_key(*key);
         Ok(())
     }
 
@@ -83,7 +79,6 @@ impl SecurityManager {
 
     /// Phase 3.1: Save a verified hash of the true PIN (PHC format) for login verification.
     pub fn save_true_pin_hash(&self, pin: &str) -> Result<()> {
-        let salt = SaltString::generate(&mut rand::thread_rng());
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
             argon2::Version::V0x13,
@@ -91,7 +86,7 @@ impl SecurityManager {
                 .map_err(|e| anyhow!("Argon2 params error: {}", e))?,
         );
         let hash = argon2
-            .hash_password(pin.as_bytes(), &salt)
+            .hash_password(pin.as_bytes())
             .map_err(|e| anyhow!("KDF error: {}", e))?
             .to_string();
         fs::write(self.data_dir.join("true_pin.hash"), hash)?;
@@ -118,8 +113,10 @@ impl SecurityManager {
             .ok_or_else(|| anyhow!("Security manager not initialized with PIN"))
     }
 
-    pub fn set_master_key(&mut self, key: [u8; 32]) {
+    pub fn set_master_key(&mut self, mut key: [u8; 32]) {
+        self.master_key.zeroize();
         self.master_key = Some(key);
+        key.zeroize();
     }
 
     /// S14: message-content ciphertexts carry a `NOIDMSG2` magic and are
@@ -133,11 +130,11 @@ impl SecurityManager {
         let cipher = Aes256Gcm::new_from_slice(&key)?;
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let ciphertext = cipher
-            .encrypt(nonce, data)
+            .encrypt(&nonce, data)
             .map_err(|e| anyhow!("Encryption error: {}", e))?;
 
         const MSG_MAGIC: &[u8; 8] = b"NOIDMSG2";
@@ -168,15 +165,14 @@ impl SecurityManager {
 
         let cipher = Aes256Gcm::new_from_slice(&key)?;
         let (nonce_bytes, ciphertext) = body.split_at(12);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::from(<[u8; 12]>::try_from(nonce_bytes)?);
 
         cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|e| anyhow!("Decryption error: {}", e))
     }
 
     pub fn set_kill_pin(&self, pin: &str) -> Result<()> {
-        let salt = SaltString::generate(&mut rand::thread_rng());
         // Same hardened Argon2id parameters as the true PIN — the kill hash
         // must resist the same offline brute-force as the login hash.
         let argon2 = Argon2::new(
@@ -186,7 +182,7 @@ impl SecurityManager {
                 .map_err(|e| anyhow!("Argon2 params error: {}", e))?,
         );
         let hash = argon2
-            .hash_password(pin.as_bytes(), &salt)
+            .hash_password(pin.as_bytes())
             .map_err(|e| anyhow!("KDF error: {}", e))?
             .to_string();
 
@@ -218,24 +214,22 @@ impl SecurityManager {
     }
 
     pub fn kill_everything(&mut self) -> Result<()> {
-        let result = if self.data_dir.exists() {
+        // Revoke and zeroize in place even if filesystem shredding fails.
+        self.master_key.zeroize();
+        if self.data_dir.exists() {
             crate::security::secure_delete::secure_delete_dir(&self.data_dir)
         } else {
             Ok(())
-        };
-        // S18: the in-memory master key must not survive a wipe — take +
-        // zeroize regardless of whether the shred fully succeeded.
-        if let Some(mut k) = self.master_key.take() {
-            k.zeroize();
         }
-        result
     }
 }
 
 impl Drop for SecurityManager {
     fn drop(&mut self) {
-        if let Some(mut key) = self.master_key {
-            key.zeroize();
-        }
+        self.master_key.zeroize();
     }
 }
+
+#[cfg(test)]
+#[path = "kill_key_revocation_test.rs"]
+mod kill_key_revocation_test;

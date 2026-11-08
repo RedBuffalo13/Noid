@@ -10,6 +10,14 @@ use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
+/// E2E tests must never emit real WAN traffic: the STUN socket probe,
+/// NAT-PMP gateway probes and Mainline-DHT rendezvous polls would make
+/// results depend on the developer's actual router/ISP (a NAT-PMP-capable
+/// router otherwise leases real mappings during tests).
+fn no_wan_probes() {
+    std::env::set_var("NOID_DISABLE_STUN", "1");
+}
+
 // ---------- RelayConfig unit tests ----------
 
 #[test]
@@ -80,6 +88,7 @@ fn test_relay_role_keeps_libp2p_limits() {
 
 #[tokio::test]
 async fn test_should_relay_roles() {
+    no_wan_probes();
     // Relay role (forced by new_relay) always relays.
     let relay_dir = tempdir().unwrap();
     let relay = P2PNode::new_relay(relay_dir.path(), Some(0)).await.unwrap();
@@ -100,6 +109,7 @@ async fn test_should_relay_roles() {
 
 #[tokio::test]
 async fn test_auto_role_not_relaying_when_unknown() {
+    no_wan_probes();
     let dir = tempdir().unwrap();
     let mut node = P2PNode::new(dir.path()).await.unwrap();
     // Fresh node: nat_status = Unknown → Auto role does not relay yet.
@@ -117,6 +127,7 @@ async fn test_same_nat_foreign_addr_not_self() {
     // listen socket — previously the ip-only match dropped the sibling's
     // addr and same-NAT peers could never dial each other.
     use libp2p::multiaddr::Protocol;
+    no_wan_probes();
     let dir = tempdir().unwrap();
     let mut node = P2PNode::new(dir.path()).await.unwrap();
     // Listeners register only once the swarm is polled — pump it until the
@@ -168,6 +179,7 @@ async fn test_same_nat_foreign_addr_not_self() {
 
 #[tokio::test]
 async fn test_dial_allowed_relayed_only() {
+    no_wan_probes();
     let dir = tempdir().unwrap();
     RelayConfig {
         privacy: PrivacyMode::RelayedOnly,
@@ -221,6 +233,7 @@ async fn wait_listen_addr(
 async fn test_relay_reservation_end_to_end() {
     let _e2e_guard = E2E_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).try_init();
+    no_wan_probes();
     let relay_dir = tempdir().unwrap();
     let client_dir = tempdir().unwrap();
 
@@ -273,6 +286,7 @@ async fn test_relay_reservation_end_to_end() {
 async fn test_relayed_connection_between_peers() {
     let _e2e_guard = E2E_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).try_init();
+    no_wan_probes();
     let relay_dir = tempdir().unwrap();
     let alice_dir = tempdir().unwrap();
     let bob_dir = tempdir().unwrap();
@@ -353,6 +367,7 @@ async fn test_relayed_connection_between_peers() {
 #[allow(clippy::await_holding_lock)] // E2E_LOCK serializes port-bound tests intentionally
 async fn test_identify_autodetects_relay() {
     let _e2e_guard = E2E_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    no_wan_probes();
     let relay_dir = tempdir().unwrap();
     let client_dir = tempdir().unwrap();
 
@@ -401,6 +416,7 @@ async fn test_cold_start_via_invite() {
     let _e2e_guard = E2E_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use crate::p2p::invite;
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).try_init();
+    no_wan_probes();
     let relay_dir = tempdir().unwrap();
     let alice_dir = tempdir().unwrap();
     let bob_dir = tempdir().unwrap();

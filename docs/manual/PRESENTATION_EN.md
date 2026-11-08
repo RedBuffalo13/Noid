@@ -61,10 +61,17 @@ documented threat model — read the code, verify yourself.
 
 ![Slide 9](slides/slide09_en.svg)
 
-## Slide 10 — The bottom line
-Noid: messaging that belongs to you.
+## Slide 10 — Onion inside (v0.2.0)
+Embedded Arti Tor in the same binary — every node gets a stable
+.onion identity, dials peers over onion3, keeps working under DPI.
+No daemon, no Orbot, no config. Off / additional / tor-only.
 
 ![Slide 10](slides/slide10_en.svg)
+
+## Slide 11 — The bottom line
+Noid: messaging that belongs to you.
+
+![Slide 11](slides/slide11_en.svg)
 
 ---
 *Palette: #0a0a0b background, #121214 surfaces, #8b5cf6 violet accent,

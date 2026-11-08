@@ -244,6 +244,12 @@ pub enum MessageType {
     /// connection carries TypingIndicator/Ping just fine — an online peer
     /// must be able to answer without a healthy DHT.
     PrekeyBundleRequest,
+    /// P4: signed endpoint advertisement — the peer's own claim of how to
+    /// reach it (onion3 / direct / circuit multiaddrs inside a signed
+    /// `EndpointRecord`). Exchanged over the authenticated Noise channel on
+    /// connect; receivers verify the signature and bounds before caching.
+    /// content = JSON-serialized EndpointRecord.
+    EndpointAdvertise,
     /// TI-18: a variant from a newer protocol version must not fail codec
     /// deserialization — it lands here and the dispatcher drops it with an
     /// ack instead of the whole request failing to parse.
