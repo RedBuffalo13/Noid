@@ -104,6 +104,44 @@ daemon, no Orbot, no proxy config, no root.
 The Tor mode, consent and relay flags persist across restarts —
 the node comes back in the mode you left it.
 
+### What an observer can see
+
+Message **content** is always E2E-encrypted (X3DH + Double Ratchet) on
+every transport — direct and onion alike. What differs is the metadata.
+
+**Passive wire observer (ISP / DPI):**
+
+| Transport | Visible | Hidden |
+|-----------|---------|--------|
+| TCP / QUIC :4020, WS :4021 | Your IP ↔ peer IP, Noid-fingerprintable ports, WS HTTP Upgrade header, timing + volumes | Message content, both PeerIds (Noise XX encrypts identities) |
+| `/onion3/` | "This IP talks to Tor" — guard IP, padded cells, timing | That it is Noid at all; the `.onion` destination; everything inside |
+
+**Protocol participants:**
+
+| Who sees | `off` | `additional` | `tor_only` |
+|----------|-------|--------------|------------|
+| Contacts | PeerId + your public IP | PeerId + IP (+ `.onion` if invited that way) | PeerId + `.onion` only — **IP never enters the protocol** |
+| Relay nodes | Circuit: source↔dest PeerIds + volumes | Same, or onion-bound circuits | Same, no source IP |
+| Mailbox node | Ciphertext envelopes + whose mailbox + delivery timing | Same | Same, no sender IP |
+| DHT (any participant) | username→PeerId, prekey bundles, mailbox pointers | Same | Same |
+| Active prober | Dials `IP:4020` → learns PeerId | Same + onion service exists for holders | Connection refused — no direct listener |
+
+**Hiding your IP — available options:**
+
+| Goal | Configuration |
+|------|---------------|
+| Hide IP from contacts | `relayed_only` privacy mode — all dial-outs ride `/p2p-circuit`; relays still see it |
+| Hide IP from everyone | `tor_only` — only the Tor guard sees an IP, and it sees "Tor client", not Noid |
+| Best speed/privacy mix | `additional` + share onion endpoint in invites |
+| Outside Noid | VPN — peers see the VPN exit IP instead of yours |
+
+Honest caveat: the first hop always sees an IP — the question is *who*
+and *what else they learn*. `relayed_only` trusts your chosen relays;
+`tor_only` makes it a random Tor guard that cannot even tell the traffic
+is Noid. Residual correlation risks on every transport: stable
+PeerId/onion pseudonymity, envelope-size timing — there is no traffic
+padding yet.
+
 ## Manual / Руководство (EN + RU)
 
 | Document | English | Русский |
