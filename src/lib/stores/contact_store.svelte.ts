@@ -1,7 +1,8 @@
 import { t } from "#lib/i18n/index.svelte";
 import { getContacts as svcGetContacts, getContactRequests as svcGetContactRequests, validatePeerId as svcValidatePeerId, sendContactRequest as svcSendContactRequest, acceptContactRequest as svcAcceptContactRequest, denyContactRequest as svcDenyContactRequest, removeContact as svcRemoveContact, getChatMessages as svcGetChatMessages } from "#lib/services";
 import type { Chat } from "#lib/types";
-import { SvelteSet } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
+import { invoke } from "@tauri-apps/api/core";
 import { uiStore } from "./ui_store.svelte";
 import { chatStore } from "./chat_store.svelte";
 
@@ -18,6 +19,11 @@ let requestMessage = $state("Hello, I'd like to add you to my contacts.");
 // FE-09: SvelteSet — plain Set mutations are invisible to $state
 // reactivity; the online dot depends on this set live-updating.
 let onlinePeers = new SvelteSet<string>();
+// Reachability model (on-demand): peerId → {level, paths, is_relay} —
+// computed in the node (cache/swarm state), refreshed on peer events
+// and contact-list loads. Falls back to online/offline semantics.
+type ReachInfo = { level: string; paths: string[]; is_relay: boolean };
+let reachability = new SvelteMap<string, ReachInfo>();
 // FE-18: coalescing — overlapping loadContacts calls used to run
 // concurrently (3s + 5s timers + every peer event), last-write-wins.
 // Now an in-flight call absorbs waiters into one follow-up pass.
@@ -33,15 +39,34 @@ export const contactStore = {
   get requestMessage() { return requestMessage; },
   set requestMessage(val: string) { requestMessage = val; },
   get onlinePeers() { return onlinePeers; },
+  get reachability() { return reachability; },
+
+  // Pull the node's reachability verdict for one peer — the node sees
+  // cache/swarm state the UI can't (fresh addrs, circuits, mailbox).
+  async refreshReachability(peerId: string) {
+    try {
+      const r = await invoke<ReachInfo>("get_reachability", { peerId });
+      reachability.set(peerId, r);
+    } catch {
+      // node down / parse fail — leave the stale entry, the dot still
+      // rides onlinePeers semantics.
+    }
+  },
+
+  async refreshAllReachability(peerIds: string[]) {
+    await Promise.all(peerIds.map((p) => this.refreshReachability(p)));
+  },
 
   setOnline(peerId: string) {
     // FE-09/FE-18: SvelteSet mutation IS the update — the template reads
     // `onlinePeers.has(chat.id)` live, no reload storm needed.
     onlinePeers.add(peerId);
+    this.refreshReachability(peerId);
   },
 
   setOffline(peerId: string) {
     onlinePeers.delete(peerId);
+    this.refreshReachability(peerId);
   },
 
   // IPC-02: node restart/wipe — no peer-disconnected events arrive, so the
@@ -68,6 +93,9 @@ export const contactStore = {
   async _loadContacts() {
     try {
       contacts = (await svcGetContacts()) as ContactRow[];
+      // Refresh reachability for every contact in the background — the
+      // node computes levels from cache/swarm state asynchronously.
+      this.refreshAllReachability(contacts.map((c) => c[0]));
       contactRequests = (await svcGetContactRequests()) as ContactRequestRow[];
 
       const loadedChats = await Promise.all(

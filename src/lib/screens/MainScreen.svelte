@@ -9,6 +9,7 @@
   import UsernameSettings from "#lib/components/settings/UsernameSettings.svelte";
   import RelaySettings from "#lib/components/settings/RelaySettings.svelte";
   import ProxySettings from "#lib/components/settings/ProxySettings.svelte";
+  import ConnectivitySettings from "#lib/components/settings/ConnectivitySettings.svelte";
   import TorSettings from "#lib/components/settings/TorSettings.svelte";
   import NetworkStatusBar from "#lib/components/ui/NetworkStatusBar.svelte";
   import TorStatusChip from "#lib/components/ui/TorStatusChip.svelte";
@@ -54,6 +55,24 @@
     || formatId(chatStore.currentPeer);
   const currentPeerOnline = () =>
     contactStore.onlinePeers.has(chatStore.currentPeer);
+
+  /** Reachability dot class — node-computed level over the legacy binary. */
+  const reachClass = (peerId: string) => {
+    const r = contactStore.reachability.get(peerId);
+    if (r) {
+      if (r.level === "connected") return "online";
+      if (r.level === "direct" || r.level === "relayed" || r.level === "onion") return "reach";
+      if (r.level === "mailbox") return "queued";
+      return "offline";
+    }
+    return contactStore.onlinePeers.has(peerId) ? "online" : "offline";
+  };
+  /** Path label next to the name — every dialable path found. */
+  const reachLabel = (peerId: string) => {
+    const r = contactStore.reachability.get(peerId);
+    if (!r || r.level === "connected" || r.level === "offline") return "";
+    return r.paths.join("·") || (r.level === "mailbox" ? "mailbox" : "");
+  };
 
   const handleKillSwitch = async () => {
     if (!killPinInput.trim()) {
@@ -293,8 +312,8 @@
       {#each contactStore.chatList as chat}
         <div class="chat-card" style="display:flex;align-items:center;">
           <button class="chat-card-btn" style="flex:1;display:flex;align-items:center;background:none;border:none;padding:12px;cursor:pointer;min-width:0;" onclick={() => openChat(chat.id)}>
-            <div class="avatar">{#if chat.avatar}<img src={chat.avatar} alt="Avatar" />{:else}{chat.name.charAt(0)}{/if}{#if chat.isOnline}<div class="online-indicator online"></div>{:else}<div class="online-indicator offline"></div>{/if}</div>
-            <div class="chat-main"><div class="chat-header"><span class="chat-name">{chat.name}</span><span class="chat-time">{chat.lastMsgTime ? formatTimestamp(chat.lastMsgTime) : ""}</span></div><div class="chat-msg">{chat.lastMsg}</div></div>
+            <div class="avatar">{#if chat.avatar}<img src={chat.avatar} alt="Avatar" />{:else}{chat.name.charAt(0)}{/if}<div class="online-indicator {reachClass(chat.id)}"></div></div>
+            <div class="chat-main"><div class="chat-header"><span class="chat-name">{chat.name}</span><span class="chat-time">{chat.lastMsgTime ? formatTimestamp(chat.lastMsgTime) : ""}</span></div><div class="chat-msg">{chat.lastMsg}{#if reachLabel(chat.id)}<span class="reach-label"> · {reachLabel(chat.id)}</span>{/if}</div></div>
             {#if chat.unread > 0}<span class="unread-badge">{chat.unread}</span>{/if}
           </button>
           {#if confirmDeleteChatPeer === chat.id}
@@ -314,7 +333,7 @@
       {#each contactStore.contacts as contact}
         <div class="chat-card" style="display:flex;align-items:center;">
           <button class="chat-card-btn" style="flex:1;display:flex;align-items:center;background:none;border:none;padding:12px;cursor:pointer;" onclick={() => openChat(contact[0])}>
-            <div class="avatar">{#if contact[2]}<img src={contact[2]} alt="Avatar" />{:else}{contact[1]?.charAt(0) || "?"}{/if}{#if contactStore.onlinePeers.has(contact[0])}<div class="online-indicator online"></div>{:else}<div class="online-indicator offline"></div>{/if}</div>
+            <div class="avatar">{#if contact[2]}<img src={contact[2]} alt="Avatar" />{:else}{contact[1]?.charAt(0) || "?"}{/if}<div class="online-indicator {reachClass(contact[0])}"></div></div>
             <div class="chat-main" style="margin-left:12px;"><span class="chat-name">{contact[1] || t("contacts.unknown")}</span><span class="chat-msg">{formatId(contact[0])}</span></div>
           </button>
           {#if confirmDeleteContactPeer === contact[0]}
@@ -361,6 +380,7 @@
       <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:0;">
         <RelaySettings />
         <ProxySettings />
+        <ConnectivitySettings />
         <TorSettings />
       </div>
       <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:16px;">
@@ -389,7 +409,11 @@
       </div>
     </div>
   {:else if uiStore.subPage === "chat-view"}
-    <div style="display:flex;flex-direction:column;height:100%;">
+    <!-- flex:1+min-height:0, NOT height:100% — the header above lives in the
+         same scrollable .content-wrapper, so 100% made the view taller than
+         the viewport: outer scroll appeared and the input bar slid below
+         the fold. min-height:0 lets the flex child shrink to fit. -->
+    <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
       <div class="message-list" role="log" aria-live="polite" aria-label={t("chat.messages")} bind:this={msgListEl}>
         {#each chatStore.messages as msg}
           <div class="msg-bubble {msg.type}">
@@ -461,7 +485,8 @@
       {/if}
     </div>
   {:else if uiStore.subPage === "room-view"}
-    <div style="display:flex;flex-direction:column;height:100%;">
+    <!-- same fix as chat-view: flex:1+min-height:0, not height:100% -->
+    <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
       <div class="message-list" role="log" aria-live="polite" aria-label={t("rooms.messages")} bind:this={msgListEl}>
         {#each chatStore.messages as msg}
           <div class="msg-bubble {msg.type}">
@@ -525,6 +550,10 @@
   .online-indicator { position:absolute; bottom:0; right:0; width:12px; height:12px; border-radius:50%; border:2px solid var(--bg-secondary); }
   .online-indicator.online { background:var(--success); }
   .online-indicator.offline { background:var(--error); }
+  /* Reachability levels: lavender = dialable path exists, muted = mailbox only */
+  .online-indicator.reach { background:var(--accent-primary); }
+  .online-indicator.queued { background:var(--text-secondary); }
+  .reach-label { font-size:12px; color:var(--accent-primary); }
   .msg-content { display:inline-block; margin-right:16px; }
   .msg-time { font-size:10px; opacity:0.55; margin-left:8px; }
   .peer-status { font-size:12px; color:var(--text-secondary); }

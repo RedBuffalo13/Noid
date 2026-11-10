@@ -253,6 +253,9 @@ pub struct AppState {
     pub relay_status: Arc<Mutex<crate::p2p::RelayStatus>>,
     /// Persisted relay configuration (role, privacy, limits).
     pub relay_config: Arc<Mutex<crate::p2p::RelayConfig>>,
+    /// Persisted connectivity policy (on-demand vs persistent conns,
+    /// idle TTL, ping/poll intervals).
+    pub connectivity_config: Arc<Mutex<crate::p2p::connectivity_config::ConnectivityConfig>>,
     /// Inbound ratchet messages that arrived before their session was usable
     /// (offline redelivery before login unlocks the DB). Retried post-login.
     pub undecrypted_inbound: Arc<Mutex<std::collections::HashMap<String, Vec<BufferedInbound>>>>,
@@ -570,6 +573,9 @@ pub fn run() {
                 audit_log: Arc::new(crate::security::audit_log::AuditLog::new(&app_data_dir)),
                 relay_status: Arc::new(Mutex::new(crate::p2p::RelayStatus::default())),
                 relay_config: Arc::new(Mutex::new(crate::p2p::RelayConfig::load(&app_data_dir))),
+                connectivity_config: Arc::new(Mutex::new(
+                    crate::p2p::connectivity_config::ConnectivityConfig::load(&app_data_dir),
+                )),
                 undecrypted_inbound: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 inbound_peer_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 pending_flush_cooldown: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1149,11 +1155,18 @@ pub fn run() {
                         }
                     }));
 
-                    // Phase I.1: Periodic mailbox retrieval — check our own mailbox every 5 minutes
+                    // Phase I.1: Periodic mailbox retrieval — check our own mailbox.
+                    // Interval comes from ConnectivityConfig.mailbox_poll_secs
+                    // (default 120s — "Connections" settings page).
                     let mailbox_retrieve_handle = handle.clone();
                     login_tasks.push(tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(10)).await; // Start after bootstrap
-                        let mut interval = interval(Duration::from_secs(300)); // 5 minutes
+                        let poll_secs = {
+                            let app_state = mailbox_retrieve_handle.state::<AppState>();
+                            let secs = app_state.connectivity_config.lock().await.mailbox_poll_secs;
+                            secs
+                        };
+                        let mut interval = interval(Duration::from_secs(poll_secs));
                         loop {
                             interval.tick().await;
                             let app_state = mailbox_retrieve_handle.state::<AppState>();
@@ -1406,8 +1419,17 @@ pub fn run() {
                                         // permanently desynced — it must retry
                                         // through pending/mailbox like the rest.
                                         | crate::p2p::MessageType::X3DHInit { .. }
+                                        // Chat/RatchetChat ALSO serialize to
+                                        // NOIDMSG1 — the wire msg_type carries
+                                        // ciphertext+headers, enough to resend
+                                        // verbatim. This kills the "no pending
+                                        // row and no recoverable body" loss
+                                        // class: a missing row is now rebuilt
+                                        // instead of dropping the message.
+                                        | crate::p2p::MessageType::Chat(_)
+                                        | crate::p2p::MessageType::RatchetChat { .. }
                                 );
-                                if !typed && !matches!(msg_type, crate::p2p::MessageType::Chat(_) | crate::p2p::MessageType::RatchetChat { .. }) {
+                                if !typed {
                                     log::debug!("Skipping pending/mailbox fallback for non-chat message type");
                                     continue;
                                 }
@@ -1530,6 +1552,11 @@ pub fn run() {
                                 safe_emit(&handle, "message-delivered", serde_json::json!({
                                     "peer_id": &peer_id,
                                     "message_id": &message_id,
+                                    // Delivery-path annotation: this ack came
+                                    // from direct request-response. Mailbox
+                                    // deliveries clear the pending row through
+                                    // MailboxStoreAck instead (queued path).
+                                    "path": "direct",
                                 }));
                             }
                             P2PEvent::UsernameAvailabilityChecked { username, available, uncertain } => {
@@ -2500,8 +2527,11 @@ pub fn run() {
             commands::get_relay_status,
             commands::get_tor_status,
             commands::set_tor_mode,
+            commands::get_connectivity_config,
+            commands::set_connectivity_config,
             commands::set_tor_relay,
             commands::get_relay_config,
+            commands::get_reachability,
             commands::get_proxy_config,
             commands::set_proxy_config,
             commands::test_proxy,

@@ -3,6 +3,8 @@ pub mod types;
 pub mod behaviour;
 pub mod build_behaviour;
 pub mod relay_config;
+pub mod connectivity_config;
+pub mod reachability;
 pub mod relay_status;
 pub mod swarm_builder;
 pub mod node;

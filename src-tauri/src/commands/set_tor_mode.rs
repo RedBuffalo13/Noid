@@ -36,7 +36,6 @@ pub async fn set_tor_mode(
         .map_err(|e| e.to_string())?;
     // Persist the choice — relay flags already live in tor_config.json;
     // without this the mode/consent reset on every restart.
-    #[cfg(feature = "embedded-tor")]
     {
         let cfg_path = state.tor.dir().join("tor_config.json");
         let mut cfg = crate::p2p::tor::config::load(&cfg_path).unwrap_or_default();

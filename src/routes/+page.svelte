@@ -87,7 +87,12 @@
           snap.connected_peers.forEach((p) => contactStore.setOnline(p));
         } catch (e) { console.error("snapshot failed", e); }
         await contactStore.loadContacts();
-        try { await invoke("reconnect_to_contacts"); } catch {}
+        // On-demand policy: contacts are NOT mass-dialed at login —
+        // a conn forms per exchange. Legacy mode keeps the warm start.
+        try {
+          const cc = await invoke<{ on_demand: boolean }>("get_connectivity_config");
+          if (!cc.on_demand) { try { await invoke("reconnect_to_contacts"); } catch {} }
+        } catch {}
         try { await chatStore.checkAllMissedMessages(); } catch (e) { console.error("missed sync failed", e); }
         try { await invoke("update_last_sync_time"); } catch {}
       };
@@ -235,7 +240,10 @@
           snap.connected_peers.forEach((p) => contactStore.setOnline(p));
         } catch {}
         await contactStore.loadContacts();
-        try { await invoke("reconnect_to_contacts"); } catch {}
+        try {
+          const cc = await invoke<{ on_demand: boolean }>("get_connectivity_config");
+          if (!cc.on_demand) { try { await invoke("reconnect_to_contacts"); } catch {} }
+        } catch {}
         try { await chatStore.checkAllMissedMessages(); } catch {}
         try { await invoke("update_last_sync_time"); } catch {}
       } catch (e) { console.error("Failed to initialize", e); }

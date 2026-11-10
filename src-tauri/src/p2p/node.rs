@@ -102,6 +102,10 @@ pub struct P2PNode {
     pub(crate) audit_log: Option<std::sync::Arc<crate::security::audit_log::AuditLog>>,
     /// Relay configuration (role, privacy, limits) loaded at startup.
     pub relay_config: RelayConfig,
+    /// Connectivity policy — persistent vs on-demand contact conns.
+    /// Loaded alongside `relay_config` from the app data dir; updated
+    /// live by `P2PCommand::SetConnectivityConfig`.
+    pub(crate) connectivity_config: crate::p2p::connectivity_config::ConnectivityConfig,
     /// Current NAT reachability as measured by AutoNAT/UPnP.
     pub(crate) nat_status: NatStatus,
     /// Platform-adaptive behavior policy (Mobile/Desktop/Headless).
@@ -212,6 +216,12 @@ pub struct P2PNode {
     /// when the conn became the LAST live path to that peer during grace.
     pub(crate) pending_conn_close:
         Vec<(tokio::time::Instant, PeerId, libp2p::swarm::ConnectionId)>,
+    /// On-demand policy: last activity per Contact-class peer
+    /// (connect, inbound request or outbound send resets it).
+    /// Peers idle past `connectivity_config.idle_conn_ttl_secs` are
+    /// disconnected — the next exchange re-dials on demand.
+    pub(crate) contact_idle_since:
+        std::collections::HashMap<PeerId, tokio::time::Instant>,
     /// Direction of each live connection (`true` = we dialed it). Feeds the
     /// deterministic symmetric-survivor rule when two direct non-QUIC conns
     /// race: the smaller peer id keeps ITS outgoing conn, the larger keeps
@@ -330,7 +340,6 @@ impl P2PNode {
         // Onion transport: when a Tor generation is running, register the
         // TorTransport factory (dials /onion3/, inbound via accept channel)
         // and subscribe our service listen addr.
-        #[cfg(feature = "embedded-tor")]
         let onion_factory = tor.as_ref().map(|t| {
             // The transport resolves the client lazily at dial time — safe
             // to register before bootstrap finishes (race fixed by
@@ -344,11 +353,6 @@ impl P2PNode {
                 },
             ) as crate::p2p::swarm_builder::UpgradedTransportFactory
         });
-        #[cfg(not(feature = "embedded-tor"))]
-        let onion_factory = {
-            let _ = tor;
-            None
-        };
 
         // Effective policy BEFORE the swarm is built (fail-closed): a
         // `tor_only` desired mode builds a swarm with zero direct
@@ -360,10 +364,7 @@ impl P2PNode {
         let onion_relay_enabled = tor.as_ref().is_some_and(|t| t.onion_relay_enabled());
         let mut swarm = build_swarm(local_key, &relay_config, onion_factory, direct_allowed, onion_relay_enabled).await?;
 
-        #[cfg(feature = "embedded-tor")]
         let own_onion = tor.as_ref().and_then(|t| t.listen_multiaddr());
-        #[cfg(not(feature = "embedded-tor"))]
-        let own_onion: Option<Multiaddr> = None;
         if let Some(listen) = &own_onion {
             if let Err(e) = swarm.listen_on(listen.clone()) {
                 log::warn!("onion listen_on failed for {}: {}", listen, e);
@@ -684,6 +685,7 @@ impl P2PNode {
             db,
             audit_log: None,
             relay_config,
+            connectivity_config: crate::p2p::connectivity_config::ConnectivityConfig::load(data_dir),
             nat_status,
             profile,
             external_addrs,
@@ -717,6 +719,7 @@ impl P2PNode {
             ping_failures: std::collections::HashMap::new(),
             conn_quic: std::collections::HashMap::new(),
             pending_conn_close: Vec::new(),
+            contact_idle_since: std::collections::HashMap::new(),
             conn_dialer: std::collections::HashMap::new(),
             conn_remote: std::collections::HashMap::new(),
             addr_failures: std::collections::HashMap::new(),
@@ -947,6 +950,28 @@ impl P2PNode {
                 Some(peer_id),
                 dial_addr,
             ));
+        }
+    }
+
+    /// Classify a peer's connection role in the on-demand policy:
+    /// reserved relays, bootstrap seeds and the active mailbox partner
+    /// are `Infra` — never idle-torn-down; everyone else is `Contact`.
+    /// A peer that is both a contact and a relay resolves to `Infra`.
+    pub(crate) fn conn_class(
+        &self,
+        peer_id: &PeerId,
+    ) -> crate::p2p::connectivity_config::ConnClass {
+        use crate::p2p::connectivity_config::ConnClass;
+        if self.reserved_relays.contains(peer_id)
+            || self.known_relays.iter().any(|(p, _)| p == peer_id)
+            || self
+                .mailbox_cache
+                .values()
+                .any(|(mp, _, _)| mp == &peer_id.to_string())
+        {
+            ConnClass::Infra
+        } else {
+            ConnClass::Contact
         }
     }
 

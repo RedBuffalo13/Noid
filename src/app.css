@@ -564,6 +564,10 @@ header {
 /* Chat View */
 .message-list {
   flex: 1;
+  /* min-height:0 — without it a flex child refuses to shrink below its
+     content height, so a long history overflows the viewport instead of
+     scrolling internally (double-scroll + input bar off-screen). */
+  min-height: 0;
   padding: 20px;
   display: flex;
   flex-direction: column;

@@ -56,6 +56,14 @@ impl P2PNode {
             // send to an online-but-not-yet-connected peer fails instantly.
             self.seed_peer_addrs(&peer_id);
         }
+        // B-1: a message without an id cannot be matched to its durable
+        // pending row on failure ("no pending row" warn + silent loss).
+        // Normalize here so every outbound wire message carries an id
+        // the re-pend path can look up.
+        let mut msg = msg;
+        if msg.id.is_empty() {
+            msg.id = uuid::Uuid::new_v4().to_string();
+        }
         let request_id = self.swarm
             .behaviour_mut()
             .request_response

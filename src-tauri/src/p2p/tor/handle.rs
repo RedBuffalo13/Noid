@@ -1,5 +1,5 @@
-//! Feature-agnostic Tor handle owned by `AppState`. Without `embedded-tor`
-//! (or with `NOID_DISABLE_TOR=1`) every entry point reports `Unsupported`
+//! Tor handle owned by `AppState`. Embedded Tor is always compiled in —
+//! `NOID_DISABLE_TOR=1` makes every entry point report `Unsupported`
 //! rather than silently enabling anything.
 
 use anyhow::{anyhow, Result};
@@ -19,7 +19,6 @@ pub fn tor_disabled_by_env() -> bool {
 /// both `aws-lc-rs` and `ring`, and rustls 0.23 refuses to auto-pick —
 /// without this every Tor TLS (guard) handshake panics the worker.
 /// Idempotent; safe to call from multiple entry points.
-#[cfg(feature = "embedded-tor")]
 pub fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
@@ -31,7 +30,8 @@ pub struct TorHandle {
     /// written through the supervisor (or the env-disabled init above).
     #[allow(dead_code)]
     status_tx: watch::Sender<TorStatus>,
-    #[cfg(feature = "embedded-tor")]
+    /// `None` only when `NOID_DISABLE_TOR=1` — there is no build variant
+    /// without embedded Tor.
     supervisor: Option<std::sync::Arc<super::supervisor::TorSupervisor>>,
     #[allow(dead_code)]
     tor_dir: PathBuf,
@@ -40,7 +40,6 @@ pub struct TorHandle {
 impl TorHandle {
     pub fn new(tor_dir: PathBuf) -> Self {
         let (status_tx, status_rx) = watch::channel(TorStatus::default());
-        #[cfg(feature = "embedded-tor")]
         let supervisor = if tor_disabled_by_env() {
             status_tx.send_modify(|s| s.state = TorState::Unsupported);
             None
@@ -53,7 +52,6 @@ impl TorHandle {
         Self {
             status_rx,
             status_tx,
-            #[cfg(feature = "embedded-tor")]
             supervisor,
             tor_dir,
         }
@@ -64,22 +62,19 @@ impl TorHandle {
         &self.tor_dir
     }
 
-    /// Whether embedded Tor exists in this build and is not env-disabled.
+    /// Whether embedded Tor is available — `false` only under
+    /// `NOID_DISABLE_TOR=1`.
     pub fn supported(&self) -> bool {
-        #[cfg(feature = "embedded-tor")]
-        return self.supervisor.is_some() && !tor_disabled_by_env();
-        #[cfg(not(feature = "embedded-tor"))]
-        return false;
+        self.supervisor.is_some() && !tor_disabled_by_env()
     }
 
-    /// Status snapshot; `Unsupported` when the feature is absent/disabled.
+    /// Status snapshot; `Unsupported` when env-disabled.
     pub fn status(&self) -> TorStatus {
         if !self.supported() {
             let mut s = self.status_rx.borrow().clone();
             s.state = TorState::Unsupported;
             return s;
         }
-        #[cfg(feature = "embedded-tor")]
         if let Some(sup_) = &self.supervisor {
             return sup_.status();
         }
@@ -88,12 +83,11 @@ impl TorHandle {
 
     /// Offline onion-identity ensure (PIN-gated master key). No Tor sockets.
     pub fn ensure_identity(&self, master: &[u8; 32]) -> Result<String> {
-        #[cfg(feature = "embedded-tor")]
         if let Some(sup_) = &self.supervisor {
             return sup_.ensure_identity(master);
         }
         let _ = master;
-        Err(anyhow!("embedded tor unsupported in this build"))
+        Err(anyhow!("embedded tor disabled (NOID_DISABLE_TOR=1)"))
     }
 
     /// Live status watch — UI's `tor-status` event bridge and any
@@ -105,25 +99,21 @@ impl TorHandle {
     /// Desired mode change; consent_version=0 is honored inside the
     /// supervisor (nothing Tor-side starts without consent).
     pub async fn set_desired(&self, mode: TorMode, consent_version: u32) -> Result<()> {
-        #[cfg(feature = "embedded-tor")]
         if let Some(sup_) = &self.supervisor {
             return sup_.set_desired(mode, consent_version).await;
         }
         let _ = (mode, consent_version);
-        Err(anyhow!("embedded tor unsupported in this build"))
+        Err(anyhow!("embedded tor disabled (NOID_DISABLE_TOR=1)"))
     }
 
     /// Running TorClient `Arc` for the node's onion transport — `None` when
-    /// no generation is up (unsupported/off/starting) or when built without
-    /// `embedded-tor`.
-    #[cfg(feature = "embedded-tor")]
+    /// no generation is up (env-disabled/off/starting).
     pub fn client(&self) -> Option<std::sync::Arc<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>> {
         self.supervisor.as_ref().and_then(|s| s.client())
     }
 
     /// Shared lazy client slot for `TorTransport` — resolved at dial time
     /// so the transport can be registered before bootstrap finishes.
-    #[cfg(feature = "embedded-tor")]
     pub fn client_slot(
         &self,
     ) -> std::sync::Arc<
@@ -135,18 +125,13 @@ impl TorHandle {
             .unwrap_or_else(|| std::sync::Arc::new(std::sync::Mutex::new(None)))
     }
 
-    /// Whether a Tor generation is currently running with a live client —
-    /// `false` in builds without `embedded-tor`.
+    /// Whether a Tor generation is currently running with a live client.
     pub fn running(&self) -> bool {
-        #[cfg(feature = "embedded-tor")]
-        return self.supervisor.as_ref().is_some_and(|s| s.client().is_some());
-        #[cfg(not(feature = "embedded-tor"))]
-        return false;
+        self.supervisor.as_ref().is_some_and(|s| s.client().is_some())
     }
 
     /// Feed accepted inbound onion streams into `tx` — the node calls this
     /// once per generation after constructing its `TorTransport`.
-    #[cfg(feature = "embedded-tor")]
     pub fn wire_inbound(&self, tx: futures::channel::mpsc::Sender<arti_client::DataStream>) -> bool {
         self.supervisor.as_ref().is_some_and(|s| s.wire_inbound(tx))
     }
@@ -167,7 +152,6 @@ impl TorHandle {
 
     /// Stop the running generation (bounded barrier inside the supervisor).
     pub async fn stop(&self) -> Result<()> {
-        #[cfg(feature = "embedded-tor")]
         if let Some(sup_) = &self.supervisor {
             return sup_.stop().await;
         }

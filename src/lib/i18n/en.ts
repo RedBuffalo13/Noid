@@ -343,6 +343,14 @@ export const en = {
   "net.zeroPeers": "No peers connected — messages are queued and will be delivered when the network is reachable.",
   "settings.saved": "Saved",
   "common.cancel": "Cancel",
+  // Connections settings (on-demand connectivity policy)
+  "conn.title": "Connections",
+  "conn.desc": "How peer connections are held. Persistent keeps every contact connection alive; on-demand dials only during exchanges and keeps relay/mailbox infrastructure up.",
+  "conn.on_demand": "On-demand connections",
+  "conn.on_demand_hint": "Contacts are not mass-dialed at login and idle connections close after the TTL. Relays, seeds and mailbox stay connected.",
+  "conn.idle_ttl": "Contact idle TTL (seconds)",
+  "conn.ping_interval": "Contact ping interval (seconds)",
+  "conn.mailbox_poll": "Mailbox poll interval (seconds)",
 } as const;
 
 export type MessageKey = keyof typeof en;

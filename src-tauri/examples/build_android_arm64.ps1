@@ -1,7 +1,6 @@
 param(
     [switch]$Offline,
     [switch]$LowMemory,
-    [switch]$Tor,
     [ValidateSet('arm64', 'x86_64')]
     [string]$Architecture = 'arm64'
 )
@@ -61,7 +60,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Frontend build failed: $LASTEXITCODE" }
     $cargoArgs = @('rustc', '--locked', '--lib', '--crate-type', 'cdylib', '--jobs', '1', '--target', $target,
         '--manifest-path', (Join-Path $tauriRoot 'Cargo.toml'))
-    if ($Tor) { $cargoArgs += @('--features', 'embedded-tor') }
+    # Embedded Tor is unconditional in this crate — no feature flags.
     if ($Offline) { $cargoArgs += '--offline' }
     if ($LowMemory) {
         $cargoArgs += @('--config', 'profile.dev.package.noid.debug=0',

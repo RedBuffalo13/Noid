@@ -23,7 +23,6 @@ fn main() {
     // Must precede ANY rustls use: the dep tree pulls both aws-lc-rs and
     // ring, and rustls 0.23 refuses to auto-pick — Arti's guard TLS would
     // otherwise panic the tokio worker mid-bootstrap.
-    #[cfg(feature = "embedded-tor")]
     noid_lib::p2p::tor::handle::install_crypto_provider();
 
     let args: Vec<String> = std::env::args().collect();

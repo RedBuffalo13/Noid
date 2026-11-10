@@ -167,7 +167,6 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
             // it every session. Requires nonzero consent (set_desired
             // refuses 0) and a non-off mode; identity must exist — it was
             // just ensured above. Identity/session state untouched.
-            #[cfg(feature = "embedded-tor")]
             {
                 let cfg = crate::p2p::tor::config::load(
                     &state.app_data_dir.join("tor").join("tor_config.json"),

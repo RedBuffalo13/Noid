@@ -75,23 +75,24 @@ hex = "0.4.3"
 hmac = { version = "0.13", features = ["zeroize"] }
 tauri-plugin-single-instance = "2"
 
-# Embedded Tor (feature `embedded-tor`, runtime-off by default). Versions are
-# pinned exactly like the P0 probe: Arti's API is unstable between releases.
-arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service", "experimental-api"], optional = true }
-tor-hsservice = { version = "=0.48.0", default-features = false, optional = true }
-tor-keymgr = { version = "=0.48.0", default-features = false, features = ["keymgr", "experimental-api", "onion-service-cli-extra"], optional = true }
-tor-key-forge = { version = "=0.48.0", default-features = false, optional = true }
-tor-persist = { version = "=0.48.0", default-features = false, features = ["state-dir"], optional = true }
-tor-rtcompat = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls"], optional = true }
-tor-config-path = { version = "=0.48.0", default-features = false, optional = true }
-tor-error = { version = "=0.48.0", default-features = false, optional = true }
-tor-cell = { version = "=0.48.0", default-features = false, optional = true }
-tor-proto = { version = "=0.48.0", default-features = false, optional = true }
-safelog = { version = "0.10", optional = true }
-fs-mistrust = { version = "=0.16.1", optional = true }
+# Embedded Tor — ALWAYS compiled in (Tor is a product feature; the only
+# off-switch is the NOID_DISABLE_TOR=1 runtime env). Versions are pinned
+# exactly like the P0 probe: Arti's API is unstable between releases.
+arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service", "experimental-api"] }
+tor-hsservice = { version = "=0.48.0", default-features = false }
+tor-keymgr = { version = "=0.48.0", default-features = false, features = ["keymgr", "experimental-api", "onion-service-cli-extra"] }
+tor-key-forge = { version = "=0.48.0", default-features = false }
+tor-persist = { version = "=0.48.0", default-features = false, features = ["state-dir"] }
+tor-rtcompat = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls"] }
+tor-config-path = { version = "=0.48.0", default-features = false }
+tor-error = { version = "=0.48.0", default-features = false }
+tor-cell = { version = "=0.48.0", default-features = false }
+tor-proto = { version = "=0.48.0", default-features = false }
+safelog = { version = "0.10" }
+fs-mistrust = { version = "=0.16.1" }
 # Named so we can install an explicit CryptoProvider: the tree pulls BOTH
 # aws-lc-rs and ring, and rustls 0.23 refuses to auto-pick.
-rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
@@ -120,18 +121,3 @@ glib = { path = "../vendor/glib" }
 arti-client = { path = "../vendor/arti-client" }
 [features]
 default = []
-embedded-tor = [
-    "dep:arti-client",
-    "dep:tor-hsservice",
-    "dep:tor-keymgr",
-    "dep:tor-key-forge",
-    "dep:tor-persist",
-    "dep:tor-rtcompat",
-    "dep:tor-config-path",
-    "dep:tor-error",
-    "dep:tor-cell",
-    "dep:tor-proto",
-    "dep:safelog",
-    "dep:fs-mistrust",
-    "dep:rustls",
-]

@@ -398,6 +398,11 @@ pub enum P2PCommand {
         peer_id: String,
         addr: String,
     },
+    /// Push a new connectivity policy into the live node — idle teardown,
+    /// redial scope and ping policy apply without a restart.
+    SetConnectivityConfig {
+        config: crate::p2p::connectivity_config::ConnectivityConfig,
+    },
     SendPublicKey {
         peer_id: String,
     },
@@ -515,6 +520,12 @@ pub enum P2PCommand {
     /// through `respond_to` (and also broadcast as RelayStatusChanged so the
     /// shared cache/UI stay in sync) — callers must not read the cached state
     /// right after sending this, the event may not have been processed yet.
+    /// Reachability level + dialable path classes for a peer — the
+    /// presence model replacing binary online/offline.
+    ReachabilityQuery {
+        peer_id: String,
+        respond_to: tokio::sync::oneshot::Sender<serde_json::Value>,
+    },
     ReportRelayStatus {
         respond_to: tokio::sync::oneshot::Sender<crate::p2p::RelayStatus>,
     },

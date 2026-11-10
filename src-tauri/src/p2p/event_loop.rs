@@ -148,6 +148,42 @@ impl P2PNode {
                         }
                         let _ = self.swarm.close_connection(id);
                     }
+                    // On-demand teardown: contact conns idle past the TTL
+                    // get dropped — the next exchange re-dials on demand.
+                    // Infra peers (reserved relays, seeds, mailbox partner)
+                    // are exempt — the reservation IS our inbound address.
+                    if self.connectivity_config.on_demand {
+                        let ttl = std::time::Duration::from_secs(
+                            self.connectivity_config.idle_conn_ttl_secs,
+                        );
+                        let now = tokio::time::Instant::now();
+                        let victims: Vec<PeerId> = self
+                            .connected_peers
+                            .iter()
+                            .copied()
+                            .filter(|p| {
+                                self.conn_class(p)
+                                    == crate::p2p::connectivity_config::ConnClass::Contact
+                                    && self
+                                        .contact_idle_since
+                                        .get(p)
+                                        .map(|t| now.duration_since(*t) > ttl)
+                                        .unwrap_or(true)
+                            })
+                            .collect();
+                        for peer in victims {
+                            log::debug!(
+                                "On-demand teardown: closing idle contact conn to {}",
+                                peer
+                            );
+                            self.contact_idle_since.remove(&peer);
+                            let _ = self.swarm.disconnect_peer_id(peer);
+                        }
+                        // Drop stale bookkeeping for gone peers.
+                        self.contact_idle_since
+                            .retain(|p, _| self.connected_peers.contains(p));
+                    }
+
                     // EL-09: pending_app_acks was swept only on insert —
                     // a quiet session let stale channels pile up past the
                     // sender's timeout forever. Sweep on the status tick too.
@@ -341,9 +377,23 @@ impl P2PNode {
                                             std::mem::discriminant(&msg.msg_type),
                                             self.connected_peers.contains(&peer)
                                         );
+                                        // Outbound activity keeps the
+                                        // contact's idle window open.
+                                        self.contact_idle_since
+                                            .insert(peer, tokio::time::Instant::now());
                                         self.send_request(peer, msg, &event_tx).await;
                                     }
                                 }
+                            }
+                            P2PCommand::SetConnectivityConfig { config } => {
+                                log::info!(
+                                    "Connectivity policy updated: on_demand={}, idle_ttl={}s, ping={}s, poll={}s",
+                                    config.on_demand,
+                                    config.idle_conn_ttl_secs,
+                                    config.contact_ping_interval_secs,
+                                    config.mailbox_poll_secs
+                                );
+                                self.connectivity_config = config;
                             }
                             P2PCommand::ConnectToPeer { peer_id, addr_hint } => {
                                 if let Ok(peer) = peer_id.parse::<libp2p::PeerId>() {
@@ -622,6 +672,14 @@ impl P2PNode {
                             P2PCommand::RefreshReservations => {
                                 self.refresh_reservations();
                             }
+                            P2PCommand::ReachabilityQuery { peer_id, respond_to } => {
+                                if let Ok(peer) = peer_id.parse::<libp2p::PeerId>() {
+                                    let r = self.reachability(&peer);
+                                    let _ = respond_to.send(serde_json::to_value(&r).unwrap_or_default());
+                                } else {
+                                    let _ = respond_to.send(serde_json::json!({"level": "offline", "paths": [], "is_relay": false}));
+                                }
+                            }
                             P2PCommand::ReportRelayStatus { respond_to } => {
                                 let status = self.relay_status();
                                 let _ = respond_to.send(status.clone());
@@ -896,6 +954,10 @@ impl P2PNode {
                         // First live connection to this peer — peers may hold
                         // several (TCP + relayed), so PeerConnected fires once.
                         let first = self.connected_peers.insert(peer_id);
+                        // On-demand bookkeeping: a fresh conn starts the
+                        // peer's idle window (torn down past the TTL).
+                        self.contact_idle_since
+                            .insert(peer_id, tokio::time::Instant::now());
                         if endpoint.is_relayed() {
                             // Track first, decide second: close_connection is
                             // async — until ConnectionClosed the conn still sits
@@ -1383,6 +1445,7 @@ impl P2PNode {
                                     );
                                 }
                             } else if !had_reservation
+                                && !self.connectivity_config.on_demand
                                 && !self.dial_is_backed_off(&peer_id)
                                 && !self
                                     .pending_conn_close
@@ -1731,6 +1794,10 @@ impl P2PNode {
                             // here used to confirm delivery before the message
                             // was persisted (a real loss window on crash).
                             self.park_app_ack(peer.to_string(), request.id.clone(), channel);
+                            // Inbound activity keeps the contact's idle
+                            // window open in on-demand mode.
+                            self.contact_idle_since
+                                .insert(peer, tokio::time::Instant::now());
                             if !emit_ev(&event_tx, P2PEvent::RequestReceived {
                                 from: peer.to_string(),
                                 data: request,
