@@ -1,0 +1,73 @@
+# Noid Messenger — GitHub publish rules
+# Only docs/manual/ is published from docs/; everything else stays private.
+
+# --- Publish gate: manual only ---
+docs/*
+!docs/manual/
+!docs/manual/**
+
+# --- Private dev files ---
+AGENTS.md
+.devin/
+server/
+security_crash.md
+.gitignore
+
+# --- Secrets & local data (never commit) ---
+docs/linux_serv/
+*.key
+*.pem
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+salt.bin
+auth_state.json
+relay_config.json
+.env
+.env.*
+!.env.example
+**/identity.key
+**/dht.key
+
+# --- Build artifacts ---
+target/
+node_modules/
+dist/
+build/
+.svelte-kit/
+*.bundle
+*.app
+*.dmg
+*.msi
+*.exe
+*.apk
+*.idsig
+*.tgz
+
+# --- OS / IDE noise ---
+.DS_Store
+Thumbs.db
+*.log
+server_logs.txt
+*.swp
+*.swo
+*.tmp
+.vscode/
+.idea/
+*.iml
+nul
+
+# --- Android generated caches (source Kotlin/res kept) ---
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/app/.gradle/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/gradle/
+src-tauri/gen/schemas/
+
+# --- Published distributions (whitelist overrides above) ---
+!distribs/*.msi
+!distribs/*.exe
+!distribs/*.apk
+!distribs/noid-*
+!docs/index.html
