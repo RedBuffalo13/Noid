@@ -44,3 +44,13 @@ export async function sendTypingIndicator(peerId: string): Promise<void> {
 export async function deleteChat(peerId: string): Promise<void> {
   return invoke("delete_chat", { peerId });
 }
+
+/** FE-A08: persist/load unread counters — they survive restarts so a
+ *  message never flips silently to "read" by process restart. */
+export async function setUnreadCount(peerId: string, count: number): Promise<void> {
+  return invoke("set_unread_count", { peerId, count });
+}
+
+export async function getUnreadCounts(): Promise<[string, number][]> {
+  return invoke("get_unread_counts");
+}

@@ -14,6 +14,7 @@
   import NetworkStatusBar from "#lib/components/ui/NetworkStatusBar.svelte";
   import TorStatusChip from "#lib/components/ui/TorStatusChip.svelte";
   import RoomSettings from "#lib/components/settings/RoomSettings.svelte";
+  import MessageList from "#lib/components/chat/MessageList.svelte";
   import UserSearch from "#lib/components/search/UserSearch.svelte";
   import NotificationSettings from "#lib/components/settings/NotificationSettings.svelte";
   import LanguageSettings from "#lib/components/settings/LanguageSettings.svelte";
@@ -190,17 +191,24 @@
     }
   };
 
+  let openRoomSeq = 0;
   const openRoom = async (id: string) => {
+    // FE-A05: a stale async result must not overwrite a room the user
+    // navigated to after this call started — sequence-guard every await.
+    const seq = ++openRoomSeq;
     try {
       await joinRoom(id);
-      chatStore.currentPeer = id;
-      chatStore.messages = (await getRoomMessages(id)).map(([msgId, sender, content, ts]) => ({
+      if (seq !== openRoomSeq) return;
+      const history = (await getRoomMessages(id)).map(([msgId, sender, content, ts]) => ({
         id: msgId,
         from: sender,
         content,
         type: "received" as const,
         timestamp: Date.parse(ts) || Date.now(),
       }));
+      if (seq !== openRoomSeq) return;
+      chatStore.currentPeer = id;
+      chatStore.messages = history;
       // Load room details (name + member profiles) for the header and
       // sender labels — failures must not block opening the room.
       roomStore.openSettings(id).catch(() => {});
@@ -220,12 +228,20 @@
       : formatId(peer);
 
   const handleSendRoomMessage = async () => {
-    if (!roomMsg.trim() || !chatStore.currentPeer) return;
+    // FE-A06: capture the draft and destination BEFORE the await — a user
+    // who keeps typing (or navigates) must not lose the new draft or have
+    // the echo land in the wrong room.
+    const content = roomMsg.trim();
+    const roomId = chatStore.currentPeer;
+    if (!content || !roomId) return;
+    roomMsg = "";
     try {
-      await sendRoomMessage(chatStore.currentPeer, roomMsg);
-      chatStore.appendMessage({ from: "Me", content: roomMsg, type: "sent", timestamp: Date.now(), delivered: true, seen: false });
-      roomMsg = "";
+      await sendRoomMessage(roomId, content);
+      if (chatStore.currentPeer === roomId) {
+        chatStore.appendMessage({ from: "Me", content, type: "sent", timestamp: Date.now(), delivered: true, seen: false });
+      }
     } catch (e) {
+      roomMsg = content; // restore the failed draft, don't lose it
       console.error("Failed to send room message:", e);
       uiStore.showToast(t("rooms.toast.sendFailed"));
     }
@@ -414,30 +430,14 @@
          the viewport: outer scroll appeared and the input bar slid below
          the fold. min-height:0 lets the flex child shrink to fit. -->
     <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
-      <div class="message-list" role="log" aria-live="polite" aria-label={t("chat.messages")} bind:this={msgListEl}>
-        {#each chatStore.messages as msg}
-          <div class="msg-bubble {msg.type}">
-            <div class="msg-content">{msg.content}</div>
-            <span class="msg-time">{formatTimestamp(msg.timestamp)}</span>
-            {#if msg.type === 'sent'}
-              <div class="delivery-status">
-                {#if msg.status === 'sending'}<span class="sending-indicator">↻</span>
-                {:else if msg.status === 'failed'}<span class="failed-indicator">✕</span>
-                {:else if msg.seen}<span class="seen-indicator">✓✓</span>
-                {:else if msg.status === 'delivered'}<span class="delivered-indicator">✓✓</span>
-                {:else if msg.status === 'sent'}<span class="sent-indicator">✓</span>
-                {:else if msg.delivered}<span class="delivered-indicator">✓</span>
-                {:else}<span class="pending-indicator">○</span>{/if}
-              </div>
-            {/if}
-          </div>
-        {:else}
-          <div class="empty-state"><p>{t("chat.empty")}</p></div>
-        {/each}
-        {#if chatStore.typingFrom === chatStore.currentPeer}
-          <div class="msg-bubble received typing-bubble" aria-live="polite"><span class="typing-dots">{t("chat.typing")}</span></div>
-        {/if}
-      </div>
+      <MessageList
+        messages={chatStore.messages}
+        variant="dm"
+        typing={chatStore.typingFrom === chatStore.currentPeer}
+        ariaLabel={t("chat.messages")}
+        emptyText={t("chat.empty")}
+        bind:listEl={msgListEl}
+      />
       <div class="input-bar">
         <input type="file" bind:this={fileInput} onchange={onFileChosen} style="display:none;" />
         <button class="num-btn" style="width:44px;height:44px;border-radius:12px;flex-shrink:0;" onclick={handleFileSelect} aria-label={t("chat.sendFile")}><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
@@ -487,19 +487,14 @@
   {:else if uiStore.subPage === "room-view"}
     <!-- same fix as chat-view: flex:1+min-height:0, not height:100% -->
     <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
-      <div class="message-list" role="log" aria-live="polite" aria-label={t("rooms.messages")} bind:this={msgListEl}>
-        {#each chatStore.messages as msg}
-          <div class="msg-bubble {msg.type}">
-            {#if msg.type === "received" && msg.from}
-              <div class="msg-sender">{roomSenderName(msg.from)}</div>
-            {/if}
-            <div class="msg-content">{msg.content}</div>
-            <span class="msg-time">{formatTimestamp(msg.timestamp)}</span>
-          </div>
-        {:else}
-          <div class="empty-state"><p>{t("rooms.emptyChat")}</p></div>
-        {/each}
-      </div>
+      <MessageList
+        messages={chatStore.messages}
+        variant="room"
+        senderName={roomSenderName}
+        ariaLabel={t("rooms.messages")}
+        emptyText={t("rooms.emptyChat")}
+        bind:listEl={msgListEl}
+      />
       <div class="input-bar">
         <input type="text" class="input-box" style="flex:1;" placeholder={t("rooms.messagePlaceholder")} bind:value={roomMsg} onkeydown={(e) => e.key === "Enter" && handleSendRoomMessage()} />
         <button class="send-btn" onclick={handleSendRoomMessage} aria-label={t("rooms.sendMessage")}><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
@@ -543,7 +538,6 @@
 
 <style>
   .badge { position:absolute; top:-5px; right:-5px; background:var(--error); color:var(--text-on-accent); border-radius:50%; width:18px; height:18px; font-size:10px; display:flex; align-items:center; justify-content:center; font-weight:bold; }
-  .msg-sender { font-size:11px; opacity:0.6; margin-bottom:2px; font-family:monospace; }
   .unread-badge { position:absolute; top:50%; right:12px; transform:translateY(-50%); background:var(--primary); color:var(--text-on-accent); border-radius:50%; width:20px; height:20px; font-size:11px; display:flex; align-items:center; justify-content:center; font-weight:bold; }
   .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px 20px; text-align:center; color:var(--text-tertiary); }
   .chat-card-btn { text-align:left; }
@@ -554,18 +548,8 @@
   .online-indicator.reach { background:var(--accent-primary); }
   .online-indicator.queued { background:var(--text-secondary); }
   .reach-label { font-size:12px; color:var(--accent-primary); }
-  .msg-content { display:inline-block; margin-right:16px; }
-  .msg-time { font-size:10px; opacity:0.55; margin-left:8px; }
   .peer-status { font-size:12px; color:var(--text-secondary); }
   .peer-status.online { color:var(--success); }
-  .delivery-status { float:right; margin-left:8px; font-size:10px; }
-  .delivered-indicator { color:var(--success); }
-  .pending-indicator { color:var(--text-secondary); }
-  .sending-indicator { color:var(--info); }
-  .sent-indicator { color:var(--info); }
-  .failed-indicator { color:var(--error); }
-  .seen-indicator { color:var(--info); }
-  .typing-bubble { font-size:13px; opacity:0.7; font-style:italic; }
   .form-group { margin-bottom:16px; }
   .label { display:block; margin-bottom:6px; font-size:14px; font-weight:500; color:var(--text-primary); }
   .input-box { width:100%; padding:12px; border-radius:12px; border:1px solid var(--border-default); background-color:var(--bg-tertiary); color:var(--text-primary); font-size:16px; }

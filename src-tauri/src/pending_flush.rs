@@ -46,7 +46,11 @@ pub(crate) async fn flush_pending_for_peer(handle: &tauri::AppHandle, peer: &str
     // F15: a pending X3DHInit is already in flight — a fresh
     // FetchPrekeyBundle would race it and desync the new session.
     let mut init_in_flight = false;
-    for (id, raw_content, message_id) in pending {
+    // NET-A10: bound one flush round — an unbounded backlog advanced
+    // send_n and burst outbound traffic per tick; rows past the cap wait
+    // for the next round (they stay pending until confirmed anyway).
+    const MAX_FLUSH_PER_ROUND: usize = 50;
+    for (id, raw_content, message_id) in pending.into_iter().take(MAX_FLUSH_PER_ROUND) {
         let Some(content) = decode_pending_content(&security, &raw_content).await else {
             log::warn!("Skipping undecryptable pending row {}", id);
             continue;

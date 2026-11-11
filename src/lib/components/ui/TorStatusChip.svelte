@@ -1,19 +1,10 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import type { UnlistenFn } from "@tauri-apps/api/event";
-  import { getTorStatus, onTorStatus, type TorStatus } from "#lib/services/tor_service";
+  import { torStatusStore } from "#lib/stores/tor_status_store.svelte";
   import { t } from "#lib/i18n/index.svelte";
 
-  let status = $state<TorStatus | null>(null);
-  let unlisten: UnlistenFn | null = null;
-
-  onMount(async () => {
-    try {
-      status = await getTorStatus();
-      unlisten = await onTorStatus((s) => { status = s; });
-    } catch { /* tor feature absent */ }
-  });
-  onDestroy(() => unlisten?.());
+  // OPT-F07: shared upstream — the chip renders the store's status, it
+  // does not own a listener.
+  const status = $derived(torStatusStore.status);
 
   // What is the visible connectivity? off → no chip (ordinary networking
   // is the default, nothing to indicate); bootstrapping → live %; ready →

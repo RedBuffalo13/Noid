@@ -18,6 +18,9 @@ let searching = $state(false);
 let availabilityStatus = $state<"idle" | "checking" | "available" | "taken" | "unknown">("idle");
 
 let checkTimer: ReturnType<typeof setTimeout> | null = null;
+// FE-A07: the query whose verdict may still arrive — handlers ignore any
+// result that does not match it.
+let availabilityQuery = "";
 
 export const usernameStore = {
   get username() { return username; },
@@ -72,10 +75,15 @@ export const usernameStore = {
 
   async checkAvailability(query: string) {
     if (!query || query.length < 3) {
+      // FE-A07: cancel any pending debounce — a late fire would run a
+      // check for a query the user already abandoned.
+      if (checkTimer) { clearTimeout(checkTimer); checkTimer = null; }
+      availabilityQuery = "";
       availabilityStatus = "idle";
       return;
     }
 
+    availabilityQuery = query;
     availabilityStatus = "checking";
 
     if (checkTimer) clearTimeout(checkTimer);
@@ -90,6 +98,9 @@ export const usernameStore = {
   },
 
   handleAvailabilityResult(payload: { username: string; available: boolean; uncertain?: boolean }) {
+    // FE-A07: a stale verdict must not apply to the query the user is
+    // typing now — only the last issued request wins.
+    if (payload.username !== availabilityQuery) return;
     if (payload.uncertain) {
       availabilityStatus = "unknown";
     } else if (payload.available) {

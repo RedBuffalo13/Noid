@@ -38,9 +38,36 @@ export const uiStore = {
 
   // FE-06: a second toast used to leave the FIRST toast's timer armed —
   // it then cleared the new message mid-display. One timer, always reset.
+  // FE-A11: an offline peer floods identical p2p-error toasts — dedup by
+  // message content: the same text within the cooldown window only
+  // refreshes the display (with a repeat counter), never restarts spam.
   showToast(msg: string) {
+    const now = Date.now();
+    if (msg === lastToastMsg && now - lastToastAt < 10_000) {
+      toastRepeats += 1;
+      status = `${msg} (×${toastRepeats + 1})`;
+      lastToastAt = now;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        status = "";
+        lastToastMsg = "";
+        toastRepeats = 0;
+      }, 3000);
+      return;
+    }
+    lastToastMsg = msg;
+    lastToastAt = now;
+    toastRepeats = 0;
     status = msg;
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (status = ""), 3000);
+    toastTimer = setTimeout(() => {
+      status = "";
+      lastToastMsg = "";
+      toastRepeats = 0;
+    }, 3000);
   }
 };
+
+let lastToastMsg = "";
+let lastToastAt = 0;
+let toastRepeats = 0;

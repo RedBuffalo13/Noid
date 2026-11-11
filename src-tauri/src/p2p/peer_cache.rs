@@ -7,7 +7,6 @@
 
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 
 const MAX_ENTRIES: usize = 200;
@@ -270,14 +269,6 @@ impl PeerCache {
             }
         }
         out
-    }
-
-    /// Merge in-memory maps (e.g. all known peers) before persisting.
-    #[allow(dead_code)]
-    pub fn merge_addrs(&mut self, map: &HashMap<PeerId, Vec<Multiaddr>>) {
-        for (peer, addrs) in map {
-            self.upsert(*peer, addrs.clone(), false);
-        }
     }
 
     /// Canonical form for endpoint comparison: the protocol stack without a

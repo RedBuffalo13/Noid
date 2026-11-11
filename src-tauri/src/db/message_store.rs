@@ -14,20 +14,11 @@ impl Database {
         receiver_id: &str,
         encrypted_content: &[u8],
     ) -> Result<()> {
+        // OPT-R01: one INSERT — the no-timestamp form only generates the
+        // timestamp and delegates; the strict-conflict semantics stay.
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        sqlx::query(
-            "INSERT INTO messages (id, sender_id, receiver_id, content, timestamp, sender_hmac, receiver_hmac) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(msg_id)
-        .bind(self.enc_text(sender_id)?)
-        .bind(self.enc_text(receiver_id)?)
-        .bind(encrypted_content)
-        .bind(Self::sanitize_ts(&timestamp))
-        .bind(self.hmac("msg.sender", sender_id))
-        .bind(self.hmac("msg.receiver", receiver_id))
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        self.add_message_with_timestamp(msg_id, sender_id, receiver_id, encrypted_content, &timestamp)
+            .await
     }
 
     pub async fn add_message_with_timestamp(

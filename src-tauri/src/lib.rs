@@ -11,10 +11,12 @@ mod auth;
 mod android_bridge;
 mod commands;
 mod contact_dispatch;
+mod encrypt_mailbox_ecdh;
 mod file_inbox;
 mod pending_flush;
 mod persist_initiated_session;
 mod request_dispatch;
+mod serialize_ratchet_chat;
 mod x3dh_dispatch;
 mod validation;
 pub mod db;
@@ -322,6 +324,11 @@ pub struct AppState {
     /// `Unsupported` when built without `embedded-tor` or under
     /// `NOID_DISABLE_TOR=1`; never starts Tor without consent.
     pub tor: crate::p2p::tor::handle::TorHandle,
+    /// SEC-A01: detached network writers (RequestReceived/RoomMessage
+    /// handlers, inbound retry workers) register their JoinHandle here so
+    /// KillPin can cancel-and-join them — a fixed sleep never proved
+    /// quiescence.
+    pub session_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 /// A ratchet message we could not decrypt yet — kept for post-login retry.
@@ -367,6 +374,102 @@ pub async fn ensure_peer_connection(state: &AppState, peer_id: &str) -> Result<(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// SEC-A01: register a detached task in the session writer registry —
+/// KillPin drains this set so no writer outlives revocation. Finished
+/// handles are compacted on registration.
+pub async fn track_task(app: &tauri::AppHandle, handle: tokio::task::JoinHandle<()>) {
+    let state = app.state::<AppState>();
+    let mut tasks = state.session_tasks.lock().await;
+    tasks.retain(|h| !h.is_finished());
+    tasks.push(handle);
+}
+
+/// SEC-A01: cancel every registered session writer and await termination,
+/// bounded. After this returns, no tracked task may still hold a DB/Tor
+/// clone — the wipe may proceed to pool close and filesystem erase.
+pub async fn drain_session_tasks(app_state: &AppState, timeout: Duration) {
+    let drained: Vec<tokio::task::JoinHandle<()>> = {
+        let mut tasks = app_state.session_tasks.lock().await;
+        std::mem::take(&mut *tasks)
+    };
+    for h in &drained {
+        h.abort();
+    }
+    let _ = tokio::time::timeout(timeout, async move {
+        for h in drained {
+            let _ = h.await;
+        }
+    })
+    .await;
+}
+
+/// OPT-R03: the confirmed-wipe pipeline, shared by kill_switch and the
+/// KillPin branch of login — revoke order must stay: admission stops
+/// (epoch + gate), Tor generation + identity are revoked, tracked session
+/// writers are joined, in-memory plaintext is dropped, the DB pool closes,
+/// then blocking erase + log-dir wipe. Both call sites used to keep two
+/// hand-synced copies of this sequence.
+pub(crate) async fn run_wipe_workflow(app_state: &AppState) -> Result<(), String> {
+    let _ = app_state.audit_log.log_kill_pin();
+    app_state.login_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    gate_set(&app_state.p2p_start_tx, false);
+    if let Err(e) = app_state.tor.revoke().await {
+        log::error!("Tor revoke before wipe failed: {}", e);
+    }
+    drain_session_tasks(app_state, Duration::from_secs(5)).await;
+    // RUN-A02: decrypted inbound chunks must not survive the wipe in RAM.
+    app_state.file_inbox.lock().await.clear();
+    // Pool close AFTER writers are joined — clones held by aborted tasks
+    // are released with them.
+    {
+        let mut db_state = app_state.db.lock().await;
+        *db_state = None;
+    }
+    log::info!("Database pool closed before wipe");
+
+    // Give released pools a moment so secure_delete does not hit file
+    // locks on Windows.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // RC15: secure_delete is synchronous fs work — off the executor.
+    let security_arc = app_state.security.clone();
+    let wipe_result = tokio::task::spawn_blocking(move || {
+        let mut security = security_arc.blocking_lock();
+        security.kill_everything()
+    })
+    .await
+    .map_err(|e| format!("wipe task failed: {}", e))?;
+    wipe_result.map_err(|e| {
+        log::error!("Secure delete failed: {}", e);
+        e.to_string()
+    })?;
+
+    // noid.log may contain peer ids, message ids and network addresses.
+    let log_dir = app_state.app_log_dir.clone();
+    if log_dir.exists() {
+        if let Err(e) = crate::security::secure_delete::secure_delete_dir(&log_dir) {
+            log::error!("Log dir wipe failed: {}", e);
+        }
+    }
+    Ok(())
+}
+
+/// NET-A03: mailbox timestamps arrive either RFC3339 (explicit writers) or
+/// SQLite `YYYY-MM-DD HH:MM:SS` UTC (`CURRENT_TIMESTAMP` defaults). Parse
+/// both; an unreadable format is NOT proof of staleness — the envelope
+/// stays queued instead of being deleted on a parse error.
+fn mailbox_ts_age_secs(ts: &str) -> Option<i64> {
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(ts) {
+        return Some(
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds(),
+        );
+    }
+    if let Ok(t) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Some((chrono::Utc::now().naive_utc() - t).num_seconds());
+    }
+    None
 }
 
 /// Set the P2P gate desired-state, bumping `seq` unconditionally.
@@ -541,10 +644,26 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
+            // RUN-A09: never fall back to "." — KillPin recursively deletes
+            // this root, so an unresolved app-data dir would aim the wipe at
+            // the process working directory. Fail startup instead.
             let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!(
+                        "app data dir resolution failed ({}); refusing to start with an ambiguous wipe root",
+                        e
+                    )
+                    .into()
+                })?;
+            if !app_data_dir.is_absolute() || app_data_dir.parent().is_none() {
+                return Err(format!(
+                    "app data dir {:?} is not an owned absolute path — refusing to start",
+                    app_data_dir
+                )
+                .into());
+            }
             if !app_data_dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
                     log::error!("Failed to create app data dir: {}", e);
@@ -577,6 +696,7 @@ pub fn run() {
                     crate::p2p::connectivity_config::ConnectivityConfig::load(&app_data_dir),
                 )),
                 undecrypted_inbound: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                session_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
                 inbound_peer_locks: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 pending_flush_cooldown: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 mailbox_decrypt_attempts: Arc::new(Mutex::new(
@@ -1194,7 +1314,12 @@ pub fn run() {
                                 .wait_for(|g| !g.open || g.seq != incarnation_seq)
                                 .await;
                             node_task.abort();
-                            for h in login_tasks { h.abort(); }
+                            for h in &login_tasks { h.abort(); }
+                            // SEC-A01: abort is a request, not a join —
+                            // await each handle so quiescence is proven
+                            // before the wipe reaches filesystem erase.
+                            let _ = node_task.await;
+                            for h in login_tasks { let _ = h.await; }
                         });
                     }
 
@@ -1232,7 +1357,7 @@ pub fn run() {
                                 // SQLite was overtaken by the RatchetChat
                                 // right behind it and lost the session race.
                                 let h = handle.clone();
-                                tokio::spawn(async move {
+                                let task = tokio::spawn(async move {
                                     let peer_lock = {
                                         let app_state = h.state::<AppState>();
                                         let mut locks = app_state.inbound_peer_locks.lock().await;
@@ -1260,6 +1385,8 @@ pub fn run() {
                                         }
                                     }
                                 });
+                                // SEC-A01: tracked — KillPin joins this writer.
+                                crate::track_task(&handle, task).await;
                             }
                             P2PEvent::RoomMessage { room_id, sender, content, msg_id, ts } => {
                                 // RC10: DB write off the forwarder path.
@@ -1269,7 +1396,7 @@ pub fn run() {
                                 // must not emit a second room-msg — the in-memory
                                 // seen_room_msgs cache is empty after a restart.
                                 let h = handle.clone();
-                                tokio::spawn(async move {
+                                let task = tokio::spawn(async move {
                                     let app_state = h.state::<AppState>();
                                     let db_state = app_state.db.lock().await;
                                     let inserted = if let Some(db) = db_state.as_ref() {
@@ -1291,18 +1418,21 @@ pub fn run() {
                                         }));
                                     }
                                 });
+                                // SEC-A01: tracked — KillPin joins this writer.
+                                crate::track_task(&handle, task).await;
                             }
-                            P2PEvent::RoomControl { room_id, sender, payload } => {
+                            P2PEvent::RoomControl { room_id, sender, payload, control_id } => {
                                 // RC10: spawn — the dispatcher authorizes and may
                                 // hit the DB/network; do not stall the forwarder.
                                 let h = handle.clone();
-                                tokio::spawn(async move {
+                                let task = tokio::spawn(async move {
                                     if let Ok(p) = serde_json::from_str::<crate::p2p::RoomPayload>(&payload) {
                                         crate::room_rekey::dispatch_room_topic_payload(
-                                            &h, &room_id, &sender, p,
+                                            &h, &room_id, &sender, &control_id, p,
                                         ).await;
                                     }
                                 });
+                                crate::track_task(&handle, task).await;
                             }
                             P2PEvent::RoomKeyStale { room_id } => {
                                 // Signed envelope failed to open — our stored
@@ -1538,7 +1668,7 @@ pub fn run() {
                                 // RC10: DB write off the forwarder path.
                                 let h = handle.clone();
                                 let (peer_id_c, message_id_c) = (peer_id.clone(), message_id.clone());
-                                tokio::spawn(async move {
+                                let task = tokio::spawn(async move {
                                     let app_state = h.state::<AppState>();
                                     let db_state = app_state.db.lock().await;
                                     if let Some(db) = db_state.as_ref() {
@@ -1549,6 +1679,7 @@ pub fn run() {
                                         }
                                     }
                                 });
+                                crate::track_task(&handle, task).await;
                                 safe_emit(&handle, "message-delivered", serde_json::json!({
                                     "peer_id": &peer_id,
                                     "message_id": &message_id,
@@ -1801,12 +1932,22 @@ pub fn run() {
                                             // S6: freshness — the mailbox assigns a timestamp and the
                                             // envelope expires after 7 days; a replayed/stale copy or a
                                             // far-future timestamp is dropped (1-day clock-skew slack).
-                                            let stale = chrono::DateTime::parse_from_rfc3339(&timestamp)
-                                                .map(|ts| {
-                                                    let age = chrono::Utc::now().signed_duration_since(ts.with_timezone(&chrono::Utc));
-                                                    age > chrono::Duration::days(8) || age < chrono::Duration::days(-1)
-                                                })
-                                                .unwrap_or(true);
+                                            let stale = match mailbox_ts_age_secs(&timestamp) {
+                                                Some(age) => {
+                                                    age > 8 * 86400 || age < -86400
+                                                }
+                                                // Unknown format ≠ stale:
+                                                // leave it queued, never
+                                                // success-ACK a message we
+                                                // could not evaluate.
+                                                None => {
+                                                    log::warn!(
+                                                        "Mailbox envelope {} from {} — unreadable timestamp {}, left queued",
+                                                        msg_id, sender, timestamp
+                                                    );
+                                                    continue;
+                                                }
+                                            };
                                             if stale {
                                                 log::warn!(
                                                     "Mailbox envelope {} from {} — stale timestamp {}, dropped",
@@ -1939,14 +2080,15 @@ pub fn run() {
 
                                             // S6: freshness — mailbox records live ≤24h, so an envelope
                                             // timestamped beyond that (or future-dated) is a replay.
-                                            let stale = chrono::DateTime::parse_from_rfc3339(&timestamp)
-                                                .ok()
-                                                .map(|ts| {
-                                                    let age = chrono::Utc::now() - ts.with_timezone(&chrono::Utc);
-                                                    age.num_seconds() > 48 * 3600
-                                                        || age.num_seconds() < -7200
-                                                })
-                                                .unwrap_or(true);
+                                            let stale = match mailbox_ts_age_secs(&timestamp) {
+                                                Some(age) => {
+                                                    age > 48 * 3600 || age < -7200
+                                                }
+                                                None => {
+                                                    log::warn!("Mailbox envelope {} — unreadable timestamp, left queued", msg_id);
+                                                    continue;
+                                                }
+                                            };
                                             if stale {
                                                 log::warn!("Mailbox envelope {} rejected — stale/missing timestamp", msg_id);
                                                 if let Some(tx) = crate::p2p_sender(&p2p_tx) {
@@ -2208,36 +2350,19 @@ pub fn run() {
                                                     let Some(content) = decode_pending_content(&security, &raw_content).await else {
                                                         continue;
                                                     };
+                                                    // OPT-R05: shared encoders — RatchetChat
+                                                    // serializes via serialize_ratchet_chat,
+                                                    // ECDH fallback via encrypt_mailbox_ecdh.
                                                     let encrypted_content: Option<Vec<u8>> = if content.starts_with("NOIDMSG1:") {
-                                                        if let Ok(m) = serde_json::from_str::<crate::p2p::NoidMessage>(content.trim_start_matches("NOIDMSG1:")) {
-                                                            if let crate::p2p::MessageType::RatchetChat { ciphertext, header_dh_public, header_pn, header_n } = &m.msg_type {
-                                                                serde_json::to_vec(&crate::security::RatchetMessage {
-                                                                    header: crate::security::RatchetHeader {
-                                                                        dh_public: header_dh_public.clone(),
-                                                                        pn: *header_pn,
-                                                                        n: *header_n,
-                                                                    },
-                                                                    ciphertext: ciphertext.clone(),
-                                                                }).ok()
-                                                            } else { None }
-                                                        } else { None }
+                                                        serde_json::from_str::<crate::p2p::NoidMessage>(content.trim_start_matches("NOIDMSG1:"))
+                                                            .ok()
+                                                            .and_then(|m| crate::serialize_ratchet_chat::serialize_ratchet_chat(&m.msg_type))
                                                     } else {
                                                         match sessions.encrypt(&peer_id_clone, content.as_bytes()).await {
                                                             Ok(Some(rm)) => serde_json::to_vec(&rm).ok(),
-                                                            _ => {
-                                                                let key_opt = db.get_contact_public_key(&peer_id_clone).await.ok().flatten();
-                                                                match (dht_cipher.as_ref(), key_opt) {
-                                                                    (Some(cipher), Some(key)) if key.len() == 32 => {
-                                                                        let mut kb = [0u8; 32];
-                                                                        kb.copy_from_slice(&key);
-                                                                        cipher.encrypt_for_recipient(
-                                                                            content.as_bytes(),
-                                                                            &x25519_dalek::PublicKey::from(kb),
-                                                                        ).ok().and_then(|m| serde_json::to_vec(&m).ok())
-                                                                    }
-                                                                    _ => None,
-                                                                }
-                                                            }
+                                                            _ => crate::encrypt_mailbox_ecdh::encrypt_mailbox_ecdh(
+                                                                &db, dht_cipher.as_deref(), &peer_id_clone, &content,
+                                                            ).await,
                                                         }
                                                     };
                                                     if let Some(enc) = encrypted_content {
@@ -2321,37 +2446,22 @@ pub fn run() {
                                                     // session). Typed payloads go through the
                                                     // ECDH envelope; plain content uses ratchet
                                                     // when a session exists.
+                                                    // OPT-R05: shared encoders — caller policy
+                                                    // (typed payloads ride ECDH only here;
+                                                    // self-path refuses non-RatchetChat) stays.
                                                     let encrypted_content: Option<Vec<u8>> = if let Some(json) = content.strip_prefix("NOIDMSG1:") {
                                                         match serde_json::from_str::<crate::p2p::NoidMessage>(json) {
-                                                            Ok(m) => match &m.msg_type {
-                                                                crate::p2p::MessageType::RatchetChat { ciphertext, header_dh_public, header_pn, header_n } => {
-                                                                    serde_json::to_vec(&crate::security::RatchetMessage {
-                                                                        header: crate::security::RatchetHeader {
-                                                                            dh_public: header_dh_public.clone(),
-                                                                            pn: *header_pn,
-                                                                            n: *header_n,
-                                                                        },
-                                                                        ciphertext: ciphertext.clone(),
-                                                                    }).ok()
-                                                                }
-                                                                _ => {
-                                                                    let key_opt = db.get_contact_public_key(&peer_id_clone).await.ok().flatten();
-                                                                    match (dht_cipher.as_ref(), key_opt) {
-                                                                        (Some(cipher), Some(key)) if key.len() == 32 => {
-                                                                            let mut kb = [0u8; 32];
-                                                                            kb.copy_from_slice(&key);
-                                                                            let recip = x25519_dalek::PublicKey::from(kb);
-                                                                            cipher
-                                                                                .encrypt_for_recipient(content.as_bytes(), &recip)
-                                                                                .ok()
-                                                                                .and_then(|m| serde_json::to_vec(&m).ok())
-                                                                        }
-                                                                        _ => {
-                                                                            log::warn!("No DHT key for typed mailbox payload to {} — keeping pending", peer_id_clone);
-                                                                            None
-                                                                        }
+                                                            Ok(m) => match crate::serialize_ratchet_chat::serialize_ratchet_chat(&m.msg_type) {
+                                                                Some(b) => Some(b),
+                                                                None => match crate::encrypt_mailbox_ecdh::encrypt_mailbox_ecdh(
+                                                                    &db, dht_cipher.as_deref(), &peer_id_clone, &content,
+                                                                ).await {
+                                                                    Some(b) => Some(b),
+                                                                    None => {
+                                                                        log::warn!("No DHT key for typed mailbox payload to {} — keeping pending", peer_id_clone);
+                                                                        None
                                                                     }
-                                                                }
+                                                                },
                                                             },
                                                             Err(_) => {
                                                                 log::warn!("Corrupt NOIDMSG1 pending row for {} — keeping", peer_id_clone);
@@ -2361,24 +2471,15 @@ pub fn run() {
                                                     } else {
                                                         match sessions.encrypt(&peer_id_clone, content.as_bytes()).await {
                                                             Ok(Some(ratchet_msg)) => serde_json::to_vec(&ratchet_msg).ok(),
-                                                            _ => {
-                                                                let key_opt = db.get_contact_public_key(&peer_id_clone).await.ok().flatten();
-                                                                match (dht_cipher.as_ref(), key_opt) {
-                                                                    (Some(cipher), Some(key)) if key.len() == 32 => {
-                                                                        let mut kb = [0u8; 32];
-                                                                        kb.copy_from_slice(&key);
-                                                                        let recip = x25519_dalek::PublicKey::from(kb);
-                                                                        cipher
-                                                                            .encrypt_for_recipient(content.as_bytes(), &recip)
-                                                                            .ok()
-                                                                            .and_then(|m| serde_json::to_vec(&m).ok())
-                                                                    }
-                                                                    _ => {
-                                                                        log::warn!("No ratchet session or DHT key for {} — keeping pending", peer_id_clone);
-                                                                        None
-                                                                    }
+                                                            _ => match crate::encrypt_mailbox_ecdh::encrypt_mailbox_ecdh(
+                                                                &db, dht_cipher.as_deref(), &peer_id_clone, &content,
+                                                            ).await {
+                                                                Some(b) => Some(b),
+                                                                None => {
+                                                                    log::warn!("No ratchet session or DHT key for {} — keeping pending", peer_id_clone);
+                                                                    None
                                                                 }
-                                                            }
+                                                            },
                                                         }
                                                     };
                                                     let Some(encrypted_content) = encrypted_content else {
@@ -2524,6 +2625,8 @@ pub fn run() {
             commands::get_my_id,
             commands::get_network_snapshot,
             commands::get_pending_message_ids,
+            commands::get_unread_counts::get_unread_counts,
+            commands::set_unread_count::set_unread_count,
             commands::get_relay_status,
             commands::get_tor_status,
             commands::set_tor_mode,

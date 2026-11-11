@@ -101,8 +101,27 @@ pub(crate) async fn handle_x3dh_init(
         return;
     }
     if has_session {
-        // Glare (unconfirmed outgoing session) or desync — drop the loser
-        // so receive_session installs a consistent pair.
+        // NET-A08: glare — an unconfirmed Alice session meets an inbound
+        // X3DHInit. "Inbound always wins" made BOTH sides drop Alice and
+        // install Bob for different handshakes. Deterministic arbitration
+        // both peers compute identically: the lexicographically greater
+        // peer id keeps its Alice session; the smaller id yields to Bob.
+        if !sessions.is_confirmed(&from).await && !sessions.is_desynced(&from).await {
+            let my_id = app_state.my_id.lock().await.clone();
+            if my_id > from {
+                log::info!(
+                    "X3DH glare with {} — our init wins by peer-id order, rejecting inbound init",
+                    from
+                );
+                return;
+            }
+            log::info!(
+                "X3DH glare with {} — peer init wins by peer-id order, becoming Bob",
+                from
+            );
+        }
+        // Desynced session or the glare loser — drop it so receive_session
+        // installs the single consistent pair.
         sessions.drop_session(&from).await;
     }
 
@@ -189,7 +208,17 @@ pub(crate) async fn handle_x3dh_init(
     let my_id_for_retry = app_state.my_id.lock().await.clone();
     let peer_id_for_retry = from;
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // NET-A01: a fixed sleep is not a protocol barrier — a fresh Bob
+        // session may still have no send chain. Wait (bounded) for the
+        // first inbound DH ratchet to initialise it before re-encrypting
+        // pending plaintext. NOIDMSG1 rows below need no ratchet, but the
+        // wait is typically shorter than the old fixed delay.
+        for _ in 0..40 {
+            if sessions_for_retry.can_send(&peer_id_for_retry).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
         // RC2: snapshot — decode_pending_content locks `security` below.
         let db = db_for_retry.lock().await.clone();
         if let Some(db) = db {

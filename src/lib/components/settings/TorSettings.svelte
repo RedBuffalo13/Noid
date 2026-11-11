@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import type { UnlistenFn } from "@tauri-apps/api/event";
-  import { getTorStatus, setTorMode, setTorRelay, onTorStatus, type TorMode, type TorStatus } from "#lib/services/tor_service";
+  import { onMount } from "svelte";
+  import { getTorStatus, setTorMode, setTorRelay, type TorMode, type TorStatus } from "#lib/services/tor_service";
+  import { torStatusStore } from "#lib/stores/tor_status_store.svelte";
   import { t } from "#lib/i18n/index.svelte";
 
   let mode = $state<TorMode>("off");
@@ -29,25 +29,26 @@
         mode = status.desired_mode;
         relayEnabled = status.relay_enabled ?? false;
         allowMetered = status.allow_metered_relay ?? false;
+        // FE-A10: a non-off desired mode means consent was already granted —
+        // reflect it, so re-saving the unchanged mode carries the existing
+        // consent instead of silently sending 0 (revocation).
+        consentAccepted = status.desired_mode !== "off";
       }
     } catch (e) {
       error = String(e);
     }
   }
 
-  // Live bootstrap/status updates via the backend's `tor-status` event —
-  // every supervisor snapshot is pushed, so no polling is needed.
-  let unlisten: UnlistenFn | undefined;
+  // OPT-F07: live snapshots flow from the shared store — no own listener.
+  // apply()/saveRelay() may still write `status` from the command result;
+  // the next pushed snapshot supersedes it, same as before.
+  $effect(() => {
+    const s = torStatusStore.status;
+    if (s) status = s;
+  });
   onMount(async () => {
     mounted = true;
     refresh(true);
-    try {
-      unlisten = await onTorStatus((s) => { if (mounted) status = s; });
-    } catch { /* event bridge absent — static status still shown */ }
-  });
-  onDestroy(() => {
-    mounted = false;
-    unlisten?.();
   });
 
   async function apply() {

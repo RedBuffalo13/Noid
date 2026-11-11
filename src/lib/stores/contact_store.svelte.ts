@@ -1,5 +1,5 @@
 import { t } from "#lib/i18n/index.svelte";
-import { getContacts as svcGetContacts, getContactRequests as svcGetContactRequests, validatePeerId as svcValidatePeerId, sendContactRequest as svcSendContactRequest, acceptContactRequest as svcAcceptContactRequest, denyContactRequest as svcDenyContactRequest, removeContact as svcRemoveContact, getChatMessages as svcGetChatMessages } from "#lib/services";
+import { getContacts as svcGetContacts, getContactRequests as svcGetContactRequests, validatePeerId as svcValidatePeerId, acceptContactRequest as svcAcceptContactRequest, denyContactRequest as svcDenyContactRequest, removeContact as svcRemoveContact, getChatMessages as svcGetChatMessages } from "#lib/services";
 import type { Chat } from "#lib/types";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { invoke } from "@tauri-apps/api/core";
@@ -14,8 +14,6 @@ type ContactRequestRow = [string, string, string | null, string | null];
 let contacts = $state<ContactRow[]>([]);
 let contactRequests = $state<ContactRequestRow[]>([]);
 let chatList = $state<Chat[]>([]);
-let requestPeerId = $state("");
-let requestMessage = $state("Hello, I'd like to add you to my contacts.");
 // FE-09: SvelteSet — plain Set mutations are invisible to $state
 // reactivity; the online dot depends on this set live-updating.
 let onlinePeers = new SvelteSet<string>();
@@ -34,12 +32,17 @@ export const contactStore = {
   get contacts() { return contacts; },
   get contactRequests() { return contactRequests; },
   get chatList() { return chatList; },
-  get requestPeerId() { return requestPeerId; },
-  set requestPeerId(val: string) { requestPeerId = val; },
-  get requestMessage() { return requestMessage; },
-  set requestMessage(val: string) { requestMessage = val; },
   get onlinePeers() { return onlinePeers; },
   get reachability() { return reachability; },
+
+  // FE-A01: KillPin wipe — contacts/requests/presence are plaintext too;
+  // drop them immediately instead of waiting for the next screen.
+  revokeSession() {
+    contacts = [];
+    contactRequests = [];
+    chatList = [];
+    onlinePeers.clear();
+  },
 
   // Pull the node's reachability verdict for one peer — the node sees
   // cache/swarm state the UI can't (fresh addrs, circuits, mailbox).
@@ -127,26 +130,6 @@ export const contactStore = {
       chatList = loadedChats;
     } catch (e) {
       console.error("Failed to load contacts", e);
-    }
-  },
-
-  async sendRequest() {
-    if (!requestPeerId.trim()) {
-      uiStore.showToast(t("contacts.toast.needPeerId"));
-      return;
-    }
-    try {
-      const isValid = await svcValidatePeerId(requestPeerId);
-      if (!isValid) {
-        uiStore.showToast(t("contacts.toast.badPeerId"));
-        return;
-      }
-      await svcSendContactRequest(requestPeerId, requestMessage);
-      uiStore.showToast(t("contacts.toast.requestSent"));
-      uiStore.subPage = "contacts";
-      requestPeerId = "";
-    } catch (e) {
-      uiStore.showToast(t("contacts.toast.error", { e: String(e) }));
     }
   },
 

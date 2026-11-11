@@ -157,4 +157,13 @@ impl TorHandle {
         }
         Ok(())
     }
+
+    /// SEC-A02: KillPin-only — stop AND drop the retained onion identity
+    /// so no master-key-backed Tor state survives the wipe in memory.
+    pub async fn revoke(&self) -> Result<()> {
+        if let Some(sup_) = &self.supervisor {
+            return sup_.revoke().await;
+        }
+        Ok(())
+    }
 }

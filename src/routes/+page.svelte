@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { authStore, uiStore, chatStore, contactStore, usernameStore } from "#lib/stores";
+  import { torStatusStore } from "#lib/stores/tor_status_store.svelte";
   import AuthScreen from "#lib/screens/AuthScreen.svelte";
   import MainScreen from "#lib/screens/MainScreen.svelte";
   import type { ChatMsgEvent, MessageReadEvent, MessageFailedEvent, Unlistener } from "#lib/types/events";
@@ -23,12 +24,25 @@
     // makes every post-await registration self-cleaning.
     let cancelled = false;
     const reg = async (p: Promise<Unlistener>) => {
-      const u = await p;
-      if (cancelled) u(); else unlisteners.push(u);
+      // FE-A09: a rejected listen() must not abort the rest of the set —
+      // the first failure used to propagate and leave every later event
+      // silently unhandled. Each listener is independent.
+      try {
+        const u = await p;
+        if (cancelled) u(); else unlisteners.push(u);
+      } catch (e) {
+        console.warn("event listener failed to register:", e);
+      }
     };
     const setup = async () => {
       await authStore.checkFirstRun();
-      await initializeNotifications();
+      // FE-A02: optional notification permission must never gate required
+      // listeners — a hang/denial previously disabled all event handling.
+      initializeNotifications().catch((e) =>
+        console.warn("Notification init skipped:", e),
+      );
+      // OPT-F07: one shared Tor-status upstream for every consumer.
+      torStatusStore.init();
 
       await reg(listen<ChatMsgEvent>("chat-msg", async (event) => {
         const from = event.payload.from;
@@ -61,7 +75,8 @@
         if (!isActiveChat || !document.hasFocus()) {
           await notifyChatMessage(from, data.content ?? "", usernameStore.username ?? undefined);
         }
-        if (from === chatStore.currentPeer) chatStore.markDeliveredToCurrentPeer();
+        // FE-A03: an incoming message is NOT delivery evidence for our
+        // outbound rows — per-id events carry that, not this call.
       }));
 
       await reg(listen<[string, unknown]>("p2p-request", (event) => {
@@ -180,8 +195,10 @@
       await reg(listen<{ peer_id: string; message_id: string }>("message-delivered", (event) => {
         chatStore.markMessageDelivered(event.payload.peer_id, event.payload.message_id);
       }));
+      // NET-A04: mailbox stored is queued-for-delivery, not delivered —
+      // the peer may never pick it up; keep ✓✓ reserved for a peer ack.
       await reg(listen<{ peer_id: string; message_id: string }>("mailbox-stored", (event) => {
-        chatStore.markMessageDelivered(event.payload.peer_id, event.payload.message_id);
+        chatStore.markMessageQueued(event.payload.peer_id, event.payload.message_id);
       }));
 
       // TI-15: inbound file transfer — offer + completion events.

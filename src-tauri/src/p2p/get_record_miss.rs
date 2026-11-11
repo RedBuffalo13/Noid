@@ -5,18 +5,37 @@ use tokio::sync::mpsc;
 use crate::p2p::node::P2PNode;
 use crate::p2p::types::{DHTUserRecord, P2PEvent};
 
-/// Resolve any leftover query state after a successful GetRecord completes.
+/// OPT-R02: why a GetRecord query ended — one resolver for both terminal
+/// events. `Completed` (FinishedWithNoAdditionalRecord) and `Inconclusive`
+/// (Timeout/QuorumFailed/...) never prove absence; only `NotFound` permits
+/// a username publish and reports a name as available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCause {
+    Completed,
+    NotFound,
+    Inconclusive,
+}
+
+impl TerminalCause {
+    pub fn is_not_found(self) -> bool {
+        matches!(self, Self::NotFound)
+    }
+}
+
+/// Resolve any leftover query state after a GetRecord terminates.
 ///
 /// In libp2p-kad 0.46, FinishedWithNoAdditionalRecord follows FoundRecord;
-/// an empty query emits Err(NotFound). This event never proves absence.
-/// FoundRecord normally consumed the pending entry already. Any leftover
-/// username query is therefore inconclusive, not permission to publish.
+/// an empty query emits Err(NotFound). Completion never proves absence.
+/// FoundRecord normally consumed the pending entry already — leftover
+/// state resolves through the same pending maps and local fallbacks, but
+/// only a real `NotFound` grants "available"/publish permission.
 ///
 /// Returns `true` when the query id was claimed by a pending map.
 impl P2PNode {
     pub(crate) async fn resolve_get_record_miss(
         &mut self,
         id: &kad::QueryId,
+        cause: TerminalCause,
         event_tx: &mpsc::Sender<P2PEvent>,
     ) -> bool {
         // Prekey bundle — the X3DH handshake (and with it every RatchetChat)
@@ -98,19 +117,39 @@ impl P2PNode {
             }
             return true;
         }
-        // A successful query must not be interpreted as a free username.
-        if let Some((pub_username, _value, _signed)) =
+        // A completed/inconclusive query is never permission to publish —
+        // only a real NotFound proves the name free and commits it.
+        if let Some((pub_username, value, signed)) =
             self.pending_username_publishes.remove(id)
         {
-            let _ = crate::p2p::event_loop::emit_ev(
-                event_tx,
-                P2PEvent::UsernameAvailabilityChecked {
-                    username: pub_username,
-                    available: false,
-                    uncertain: true,
-                },
-            )
-            .await;
+            if cause.is_not_found() {
+                match self.commit_username_publish(&pub_username, value, signed) {
+                    Ok(_) => {
+                        let _ = crate::p2p::event_loop::emit_ev(
+                            event_tx,
+                            P2PEvent::UsernameAvailabilityChecked {
+                                username: pub_username,
+                                available: true,
+                                uncertain: false,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        log::error!("Username publish failed: {}", err);
+                    }
+                }
+            } else {
+                let _ = crate::p2p::event_loop::emit_ev(
+                    event_tx,
+                    P2PEvent::UsernameAvailabilityChecked {
+                        username: pub_username,
+                        available: false,
+                        uncertain: true,
+                    },
+                )
+                .await;
+            }
             return true;
         }
         // Username availability / lookup queries.
@@ -161,12 +200,15 @@ impl P2PNode {
         }
         match kind {
             UsernameQueryKind::Availability => {
+                // D6: NotFound = peers were queried and nobody holds the
+                // record → genuinely free; everything else is "unknown".
+                let free = cause.is_not_found();
                 let _ = crate::p2p::event_loop::emit_ev(
                     event_tx,
                     P2PEvent::UsernameAvailabilityChecked {
                         username: lookup_username,
-                        available: false,
-                        uncertain: true,
+                        available: free,
+                        uncertain: !free,
                     },
                 )
                 .await;

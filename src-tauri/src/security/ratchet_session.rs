@@ -226,6 +226,17 @@ impl RatchetSessionManager {
         self.sessions.lock().await.contains_key(peer_id)
     }
 
+    /// NET-A01: true once the session's send chain is initialised — for a
+    /// Bob session only after the first successful inbound DH ratchet.
+    pub async fn can_send(&self, peer_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .await
+            .get(peer_id)
+            .map(|s| s.can_send())
+            .unwrap_or(false)
+    }
+
     /// MD-03: true once the peer has answered on this session. An
     /// unconfirmed outgoing (Alice) session still accepts a concurrent
     /// X3DHInit — that is the handshake-glare tie-break, not a resync need.

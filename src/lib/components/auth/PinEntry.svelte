@@ -6,6 +6,9 @@
     pin = '',
     length = 8,
     maxLength = 64,
+    busy = false,
+    minLength = 0,
+    showDisplay = true,
     oninput,
     onsubmit
   }: {
@@ -14,6 +17,13 @@
     length?: number;
     /** Hard input cap — backend accepts 8–64. */
     maxLength?: number;
+    /** Disable every key while an auth request is in flight. */
+    busy?: boolean;
+    /** OK stays disabled until pin reaches this length (0 = always armed). */
+    minLength?: number;
+    /** OPT-F03: callers with a richer display (clear button, hints) hide
+     *  the built-in one and keep only the shared numpad. */
+    showDisplay?: boolean;
     oninput?: (value: string) => void;
     onsubmit?: (value: string) => void;
   } = $props();
@@ -33,6 +43,7 @@
   }
 </script>
 
+{#if showDisplay}
 <div class="pin-display animate-fade-in">
   {#each Array(length) as _, i}
     <div class="pin-dot {pin.length > i ? 'active' : ''}"></div>
@@ -41,14 +52,16 @@
     <span class="pin-extra">+{pin.length - length}</span>
   {/if}
 </div>
+{/if}
 
-<div class="numpad">
+<div class="numpad" class:busy>
   {#each ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "OK"] as key}
     <Button
       variant={key === 'OK' || key === '⌫' ? 'primary' : 'secondary'}
       size="lg"
       onclick={() => handleKey(key)}
       className={key === 'OK' || key === '⌫' ? 'special' : ''}
+      disabled={busy || (key === 'OK' && pin.length < minLength)}
       type="button"
       ariaLabel={key === '⌫' ? t('auth.pin.backspace') : key}
     >
@@ -92,6 +105,11 @@
     gap: 16px;
     width: 100%;
     max-width: 320px;
+  }
+
+  .numpad.busy {
+    opacity: 0.5;
+    pointer-events: none;
   }
 
   .numpad :global(.btn) {

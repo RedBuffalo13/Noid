@@ -77,6 +77,12 @@ impl SecurityManager {
         self.data_dir.join("true_pin.hash").exists()
     }
 
+    /// SEC-A06: a partial setup may have written true_pin.hash but died
+    /// before kill.hash — the resume path checks this to repair the pair.
+    pub fn is_kill_pin_configured(&self) -> bool {
+        self.data_dir.join("kill.hash").exists()
+    }
+
     /// Phase 3.1: Save a verified hash of the true PIN (PHC format) for login verification.
     pub fn save_true_pin_hash(&self, pin: &str) -> Result<()> {
         let argon2 = Argon2::new(
@@ -214,6 +220,16 @@ impl SecurityManager {
     }
 
     pub fn kill_everything(&mut self) -> Result<()> {
+        // RUN-A09: this function recursively deletes `data_dir` — refuse
+        // any root that is not a validated absolute app-owned path. A
+        // relative or "." path here once meant "wipe the cwd".
+        if !self.data_dir.is_absolute() || self.data_dir.parent().is_none() {
+            self.master_key.zeroize();
+            return Err(anyhow!(
+                "Refusing wipe: data dir {:?} is not an owned absolute path",
+                self.data_dir
+            ));
+        }
         // Revoke and zeroize in place even if filesystem shredding fails.
         self.master_key.zeroize();
         if self.data_dir.exists() {

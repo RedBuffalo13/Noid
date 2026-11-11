@@ -124,12 +124,25 @@ pub(crate) async fn dispatch_room_topic_payload(
     handle: &tauri::AppHandle,
     room_id: &str,
     sender: &str,
+    control_id: &str,
     payload: RoomPayload,
 ) {
     let app_state = handle.state::<AppState>();
     let my_id = app_state.my_id.lock().await.clone();
     let db_state = app_state.db.lock().await;
     let Some(db) = db_state.as_ref() else { return };
+    // NET-A07: durable dedup — a control payload already applied (even
+    // before the last restart) must not re-run management ops. The
+    // in-memory gossipsub dedup alone loses to a post-restart republish
+    // inside the 30-day freshness window.
+    match db.claim_room_control(room_id, control_id).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            log::warn!("room_control dedup failed for {}: {} — dropped", room_id, e);
+            return;
+        }
+    }
     let info = db.get_room_info(room_id).await.ok().flatten();
     let Some(info) = info else { return };
     let sender_is_owner = info.owner.as_deref() == Some(sender);

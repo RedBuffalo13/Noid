@@ -44,14 +44,6 @@ impl DHTCipher {
         }
     }
     
-    /// Создание из существующих ключей
-    pub fn from_keys(private_key: StaticSecret, public_key: PublicKey) -> Self {
-        Self {
-            private_key,
-            public_key,
-        }
-    }
-
     /// Phase 2.2: Получить приватный ключ как байты для персистентного хранения
     pub fn private_key_bytes(&self) -> [u8; 32] {
         self.private_key.to_bytes()

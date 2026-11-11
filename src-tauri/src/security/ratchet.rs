@@ -111,7 +111,24 @@ impl DoubleRatchet {
         self.confirmed
     }
 
+    /// NET-A01: the send chain exists only after a remote DH public was
+    /// bound into the state — for Bob that happens on the first inbound
+    /// DH ratchet. Callers must not treat a session's mere existence as
+    /// permission to emit ciphertext.
+    pub fn can_send(&self) -> bool {
+        self.dh_remote_public.is_some()
+    }
+
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<RatchetMessage> {
+        // NET-A01: without a remote DH public the "send chain" is the
+        // placeholder [0u8; 32] — encrypting would emit a message key
+        // derivable from public constants alone. Wait for the first
+        // inbound DH ratchet instead of leaking ciphertext.
+        if self.dh_remote_public.is_none() {
+            return Err(anyhow!(
+                "Ratchet send chain not ready — awaiting first inbound DH ratchet"
+            ));
+        }
         let (new_chain_key, message_key) = kdf_chain(&self.send_chain_key)?;
         self.send_chain_key = new_chain_key;
 
@@ -437,6 +454,10 @@ impl DoubleRatchet {
         offset += 32;
         let mut self_public_bytes = [0u8; 32];
         self_public_bytes.copy_from_slice(&data[offset..offset + 32]);
+        // SEC-A05: consume the self public field — without this step the
+        // skipped-key count below is decoded out of the public key bytes,
+        // losing every stored skipped key (and misaligning the trailer).
+        offset += 32;
 
         let dh_self_secret = if has_self_secret {
             Some(StaticSecret::from(secret_bytes))
@@ -619,8 +640,12 @@ mod tests {
         assert!(!alice_ratchet.is_confirmed(), "fresh Alice must be unconfirmed");
         assert!(bob_ratchet.is_confirmed(), "Bob is confirmed from the init");
 
-        // First inbound ciphertext from the peer confirms Alice.
+        // First inbound ciphertext from the peer confirms Alice. Bob may
+        // only encrypt after his own inbound DH ratchet (NET-A01) — give
+        // him one message from Alice first.
         let mut bob_r = bob_ratchet;
+        let first = alice_ratchet.encrypt(b"hello").unwrap();
+        bob_r.decrypt(&first).unwrap();
         let reply = bob_r.encrypt(b"ack").unwrap();
         alice_ratchet.decrypt(&reply).unwrap();
         assert!(alice_ratchet.is_confirmed());
@@ -660,5 +685,60 @@ mod tests {
         let restored2 = DoubleRatchet::import_state(&state).unwrap();
         let msg3 = restored2.clone().encrypt(b"next").unwrap();
         bob_ratchet.decrypt(&msg3).unwrap(); // chain continuity preserved
+    }
+
+    /// NET-A01: a fresh Bob session has no send chain — encrypt must fail
+    /// without mutating state until the first inbound DH ratchet runs.
+    /// After Alice's first ciphertext lands, Bob sends normally.
+    #[test]
+    fn test_bob_cannot_encrypt_before_first_inbound_dh() {
+        let alice = X3DH::new();
+        let bob = X3DH::new();
+        let (bundle, bob_signed_prekey, _) = bob.generate_prekey_bundle();
+        let (_initial_msg, shared_secret) = alice.initiate(&bundle).unwrap();
+
+        let mut alice_ratchet =
+            DoubleRatchet::init_alice(shared_secret, PublicKey::from(&bob_signed_prekey)).unwrap();
+        let mut bob_ratchet = DoubleRatchet::init_bob(shared_secret, bob_signed_prekey);
+
+        assert!(!bob_ratchet.can_send());
+        assert!(bob_ratchet.encrypt(b"early leak").is_err());
+        assert!(!bob_ratchet.can_send(), "failed encrypt must not mutate state");
+
+        // First authenticated inbound ciphertext initialises the send chain.
+        let first = alice_ratchet.encrypt(b"hello bob").unwrap();
+        bob_ratchet.decrypt(&first).unwrap();
+        assert!(bob_ratchet.can_send());
+
+        let reply = bob_ratchet.encrypt(b"hi alice").unwrap();
+        assert_eq!(alice_ratchet.decrypt(&reply).unwrap(), b"hi alice");
+    }
+
+    /// SEC-A05: export→import must preserve skipped keys — a message that
+    /// arrived out of order before export still decrypts after import.
+    #[test]
+    fn test_export_import_preserves_skipped_keys() {
+        let alice = X3DH::new();
+        let bob = X3DH::new();
+        let (bundle, bob_signed_prekey, _) = bob.generate_prekey_bundle();
+        let (_initial_msg, shared_secret) = alice.initiate(&bundle).unwrap();
+
+        let mut alice_ratchet =
+            DoubleRatchet::init_alice(shared_secret, PublicKey::from(&bob_signed_prekey)).unwrap();
+        let mut bob_ratchet = DoubleRatchet::init_bob(shared_secret, bob_signed_prekey);
+
+        let delayed = alice_ratchet.encrypt(b"delivered later").unwrap();
+        let first = alice_ratchet.encrypt(b"arrives first").unwrap();
+
+        // Out-of-order delivery stores a skipped key for `delayed`.
+        bob_ratchet.decrypt(&first).unwrap();
+
+        let restored = DoubleRatchet::import_state(&bob_ratchet.export_state()).unwrap();
+        let mut restored = restored;
+        assert_eq!(
+            restored.decrypt(&delayed).unwrap(),
+            b"delivered later",
+            "skipped key must survive export/import"
+        );
     }
 }

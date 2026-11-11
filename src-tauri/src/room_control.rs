@@ -709,8 +709,9 @@ pub(crate) async fn apply_room_chat(
             // same dispatcher as topic envelopes — sender is the signed
             // envelope field, not the transport peer.
             let sender = env.sender_peer_id.clone();
+            let control_id = env.msg_id.clone();
             drop(db_state);
-            crate::room_rekey::dispatch_room_topic_payload(handle, room_id, &sender, payload).await;
+            crate::room_rekey::dispatch_room_topic_payload(handle, room_id, &sender, &control_id, payload).await;
         }
         Err(_) => {
             // Legacy raw-text envelope — treat as chat.

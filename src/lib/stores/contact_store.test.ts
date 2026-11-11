@@ -76,31 +76,6 @@ describe("contact_store", () => {
     });
   });
 
-  describe("sendRequest", () => {
-    it("shows toast when peerId is empty", async () => {
-      contactStore.requestPeerId = "   ";
-      await contactStore.sendRequest();
-      expect(validatePeerId).not.toHaveBeenCalled();
-      expect(uiStore.showToast).toHaveBeenCalledWith(t("contacts.toast.needPeerId"));
-    });
-
-    it("shows toast when peerId is invalid", async () => {
-      contactStore.requestPeerId = "invalid";
-      vi.mocked(validatePeerId).mockResolvedValue(false);
-      await contactStore.sendRequest();
-      expect(uiStore.showToast).toHaveBeenCalledWith(t("contacts.toast.badPeerId"));
-    });
-
-    it("sends request on valid peerId", async () => {
-      contactStore.requestPeerId = "12D3KooW...";
-      vi.mocked(validatePeerId).mockResolvedValue(true);
-      vi.mocked(sendContactRequest).mockResolvedValue(undefined);
-      await contactStore.sendRequest();
-      expect(sendContactRequest).toHaveBeenCalled();
-      expect(uiStore.showToast).toHaveBeenCalledWith(t("contacts.toast.requestSent"));
-    });
-  });
-
   describe("acceptRequest", () => {
     it("validates and accepts", async () => {
       vi.mocked(validatePeerId).mockResolvedValue(true);

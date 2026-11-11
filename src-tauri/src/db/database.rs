@@ -173,16 +173,50 @@ impl Database {
         let msg_cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let me_hmac = self.hmac("msg.receiver", my_id);
+
+        // SEC-A04: `contacts.id_hmac` is the "contact.id" namespace while
+        // messages/ratchet_states store "msg.sender"/"ratchet.peer" tokens
+        // — the old `NOT IN (SELECT id_hmac …)` compared two different
+        // HMAC domains, so EVERY row looked orphaned and a valid contact's
+        // old messages and ratchet state were deleted. Build per-domain
+        // keep-sets from the decrypted contact ids instead.
+        let contact_ids: Vec<String> = self
+            .get_contacts()
+            .await?
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        let msg_keep: Vec<String> = contact_ids
+            .iter()
+            .map(|id| self.hmac("msg.sender", id))
+            .collect();
+        let ratchet_keep: Vec<String> = contact_ids
+            .iter()
+            .map(|id| self.hmac("ratchet.peer", id))
+            .collect();
+        // Empty contact list → every stored row is an orphan by definition;
+        // `NOT IN ()` is invalid SQL, so substitute a tautology.
+        let msg_in = if msg_keep.is_empty() {
+            "1=1".to_string()
+        } else {
+            format!("sender_hmac NOT IN ({})", "?,".repeat(msg_keep.len()).trim_end_matches(','))
+        };
+        let ratchet_in = if ratchet_keep.is_empty() {
+            "1=1".to_string()
+        } else {
+            format!("peer_hmac NOT IN ({})", "?,".repeat(ratchet_keep.len()).trim_end_matches(','))
+        };
+
         let mut tx = self.pool.begin().await?;
-        let r1 = sqlx::query(
-            "DELETE FROM messages WHERE receiver_hmac = ? \
-             AND sender_hmac NOT IN (SELECT id_hmac FROM contacts) \
-             AND timestamp < ?",
-        )
-        .bind(&me_hmac)
-        .bind(&msg_cutoff)
-        .execute(&mut *tx)
-        .await?;
+        let mut q1 = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM messages WHERE receiver_hmac = ? AND {} AND timestamp < ?",
+            msg_in
+        )))
+        .bind(&me_hmac);
+        for h in &msg_keep {
+            q1 = q1.bind(h);
+        }
+        let r1 = q1.bind(&msg_cutoff).execute(&mut *tx).await?;
         let r2 = sqlx::query(
             "DELETE FROM contact_requests WHERE timestamp < datetime('now', '-30 days')",
         )
@@ -194,13 +228,15 @@ impl Database {
         )
         .execute(&mut *tx)
         .await?;
-        let r4 = sqlx::query(
-            "DELETE FROM ratchet_states WHERE peer_hmac NOT IN \
-             (SELECT id_hmac FROM contacts) \
+        let mut q4 = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM ratchet_states WHERE {} \
              AND updated_at < datetime('now', '-30 days')",
-        )
-        .execute(&mut *tx)
-        .await?;
+            ratchet_in
+        )));
+        for h in &ratchet_keep {
+            q4 = q4.bind(h);
+        }
+        let r4 = q4.execute(&mut *tx).await?;
         tx.commit().await?;
         let total = r1.rows_affected() + r2.rows_affected() + r3.rows_affected() + r4.rows_affected();
         if total > 0 {

@@ -155,6 +155,10 @@ impl TorSupervisor {
             inner.generation
         };
         self.stop_running().await?;
+        // NET-A02: record the REQUIRED policy before any failure branch —
+        // env/consent/identity errors must never leave desired_mode stale
+        // and let node.rs build direct transports for a TorOnly request.
+        self.set_status(|s| s.desired_mode = mode);
         if mode == TorMode::Off {
             self.set_status(|s| {
                 s.state = TorState::Off;
@@ -284,6 +288,18 @@ impl TorSupervisor {
     pub async fn stop(&self) -> Result<()> {
         let consent = self.lock()?.consent_version;
         self.set_desired(TorMode::Off, consent).await
+    }
+
+    /// SEC-A02: KillPin-only variant of stop — after the running generation
+    /// is down, drop the retained onion identity (master-key-backed
+    /// keystore owner). A plain stop() keeps identity for a fast restart;
+    /// revocation must not.
+    pub async fn revoke(&self) -> Result<()> {
+        self.stop().await?;
+        let mut inner = self.lock()?;
+        inner.identity = None;
+        self.set_status(|s| s.onion_address = None);
+        Ok(())
     }
 
     /// Teardown the running generation through the bounded barrier.

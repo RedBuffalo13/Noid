@@ -38,6 +38,8 @@ pub mod leave_room;
 pub mod list_pending_room_invites;
 pub mod is_first_run;
 pub mod is_kill_pin_configured;
+pub mod get_unread_counts;
+pub mod set_unread_count;
 pub mod kill_switch;
 pub mod login;
 pub mod lookup_user;

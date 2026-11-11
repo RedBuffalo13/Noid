@@ -9,7 +9,7 @@
     onRelayStatus,
   } from "#lib/services/relay_service";
   import { getMyInvite } from "#lib/services/contact_service";
-  import { getTorStatus, onTorStatus, type TorStatus } from "#lib/services/tor_service";
+  import { torStatusStore } from "#lib/stores/tor_status_store.svelte";
   import type { NodeRole, PrivacyMode, RelayConfig, RelayStatus } from "#lib/relay";
   import { t } from "#lib/i18n/index.svelte";
 
@@ -17,13 +17,13 @@
   let status = $state<RelayStatus | null>(null);
   // In tor_only there are no direct sockets — STUN/NAT can never resolve,
   // so the honest labels come from the Tor status, not the WAN status.
-  let torStatus = $state<TorStatus | null>(null);
+  // OPT-F07: shared upstream — live Tor updates flow from the store.
+  let torStatus = $derived(torStatusStore.status);
   let onionOnly = $derived(torStatus?.effective_mode === "tor_only");
   let invite = $state<string>("");
   let inviteCopied = $state(false);
   let error = $state<string>("");
   let unlisten: UnlistenFn | null = null;
-  let unlistenTor: UnlistenFn | null = null;
 
   const natKeys: Record<string, string> = {
     unknown: "relay.nat.unknown",
@@ -42,12 +42,6 @@
   onMount(async () => {
     try {
       [config, status] = await Promise.all([getRelayConfig(), getRelayStatus()]);
-      try {
-        torStatus = await getTorStatus();
-        // Live Tor updates drive the "Onion only"/"Onion relaying" rows —
-        // no need to leave the settings screen to see them change.
-        unlistenTor = await onTorStatus((s) => { torStatus = s; });
-      } catch { /* feature absent — keep WAN labels */ }
       unlisten = await onRelayStatus((s) => {
         status = s;
         refreshInvite();
@@ -60,7 +54,6 @@
 
   onDestroy(() => {
     unlisten?.();
-    unlistenTor?.();
   });
 
   async function changeRole(role: NodeRole) {

@@ -33,44 +33,8 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
     .map_err(|e| format!("verify task failed: {}", e))?;
 
     if is_kill_pin {
-        // Phase E: Log kill-switch activation before wiping
-        let _ = state.audit_log.log_kill_pin();
-        // Close the SQLite pool BEFORE wiping — on a re-login in the same
-        // process the open pool holds file locks and secure_delete fails on
-        // Windows (mirrors kill_switch.rs).
-        {
-            let mut db_state = state.db.lock().await;
-            *db_state = None;
-        }
-        // Stop the P2P node before wiping its keys/peer cache (see
-        // kill_switch.rs) — the gate flip aborts the node task and the gate
-        // task resets p2p_tx/dht_cipher/my_id/ratchet state.
-        state.login_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::gate_set(&state.p2p_start_tx, false);
-        // Stop the Tor generation before wiping its keys (see kill_switch.rs).
-        if let Err(e) = state.tor.stop().await {
-            log::error!("Tor shutdown before wipe failed: {}", e);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // RC15: secure_delete is synchronous fs work — keep it off the
-        // async executor; the security guard lives only inside the task.
-        let security_arc = state.security.clone();
-        let wipe_result = tokio::task::spawn_blocking(move || {
-            let mut security = security_arc.blocking_lock();
-            security.kill_everything()
-        })
-        .await
-        .map_err(|e| format!("wipe task failed: {}", e))?;
-        wipe_result.map_err(|e| e.to_string())?;
-        // Wipe the log directory too — noid.log may contain peer ids,
-        // message ids and network addresses from this session.
-        let log_dir = state.app_log_dir.clone();
-        if log_dir.exists() {
-            if let Err(e) = crate::security::secure_delete::secure_delete_dir(&log_dir) {
-                log::error!("Log dir wipe failed: {}", e);
-            }
-        }
+        // OPT-R03: one destructive pipeline — see run_wipe_workflow.
+        crate::run_wipe_workflow(state.inner()).await?;
         {
             let auth_manager = state.auth_manager.lock().await;
             auth_manager.reset_attempts().await;
@@ -131,6 +95,22 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
             let mut database = match Database::new(&db_path).await {
                 Ok(db) => db,
                 Err(e) => {
+                    // SEC-A07: quarantine only on evidence of actual
+                    // corruption. Transient I/O, file locks, permissions
+                    // and incompatible/newer schema now surface the error
+                    // instead of moving the user's database aside.
+                    let msg = e.to_string().to_lowercase();
+                    let corrupt = ["malformed", "not a database", "corrupt",
+                        "database disk image"]
+                        .iter()
+                        .any(|m| msg.contains(m));
+                    if !corrupt {
+                        log::error!("noid.db open failed without corruption evidence: {}", e);
+                        return Err(format!(
+                            "Database unavailable (file left untouched): {}",
+                            e
+                        ));
+                    }
                     log::error!("noid.db unreadable ({}), quarantining and recreating", e);
                     let _ = state.audit_log.log(
                         "db_quarantine",

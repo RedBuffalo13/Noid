@@ -9,6 +9,8 @@ vi.mock("#lib/services", () => ({
   sendTypingIndicator: vi.fn(),
   getPendingMessageIds: vi.fn().mockResolvedValue([]),
   deleteChat: vi.fn(),
+  setUnreadCount: vi.fn().mockResolvedValue(undefined),
+  getUnreadCounts: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("./ui_store.svelte", () => ({

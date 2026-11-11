@@ -9,6 +9,7 @@ pub mod ratchet_store;
 pub mod prekey_store;
 pub mod mailbox_store;
 pub mod room_invite_store;
+pub mod unread_store;
 
 pub use database::Database;
 

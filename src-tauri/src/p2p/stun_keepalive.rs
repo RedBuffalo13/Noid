@@ -15,7 +15,7 @@
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
 use libp2p_quic::stun_hook::{
-    self, build_binding_request, StunMapping, StunNatKind, PUBLIC_STUN_SERVERS,
+    self, build_binding_request, StunMapping, StunNatKind,
 };
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
@@ -98,11 +98,6 @@ pub fn probe_single_server(
         return None;
     }
     stun_hook::parse_binding_response(&buf[..n], Some(&tx_id))
-}
-
-/// Return the static list of public STUN reflectors.
-pub fn public_stun_servers() -> &'static [SocketAddr] {
-    PUBLIC_STUN_SERVERS
 }
 
 #[cfg(test)]

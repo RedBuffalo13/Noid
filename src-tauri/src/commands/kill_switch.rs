@@ -17,55 +17,8 @@ pub async fn kill_switch(pin: String, state: State<'_, AppState>) -> Result<Auth
     .map_err(|e| format!("verify task failed: {}", e))?;
 
     if is_kill_pin {
-        // Phase E: Log kill-switch activation before wiping
-        let _ = state.audit_log.log_kill_pin();
-
-        // Phase 3.4: Close DB pool before wipe to avoid file lock conflicts
-        {
-            let mut db_state = state.db.lock().await;
-            *db_state = None; // Drop the Database, closing the SQLite pool
-        }
-        log::info!("Database pool closed before wipe");
-
-        // Stop the P2P node before wiping its keys/peer cache: flipping the
-        // login gate to false aborts the node task, which drops the mailbox.db
-        // pool and closes the event channel — then the gate task resets
-        // p2p_tx/dht_cipher/my_id/ratchet state for a clean re-login.
-        // RC12: bump the login epoch so any surviving spawn (prekey publish,
-        // retry workers) aborts instead of writing into the wiped session.
-        state.login_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::gate_set(&state.p2p_start_tx, false);
-        // Stop the Tor generation before wiping its keys — the supervisor's
-        // bounded barrier drops client/service/tasks so no Tor writer
-        // outlives the wipe.
-        if let Err(e) = state.tor.stop().await {
-            log::error!("Tor shutdown before wipe failed: {}", e);
-        }
-        // Give the abort + pool drop a moment so secure_delete does not hit
-        // file locks on Windows.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // RC15: secure_delete is synchronous fs work — off the executor.
-        let security_arc = state.security.clone();
-        let wipe_result = tokio::task::spawn_blocking(move || {
-            let mut security = security_arc.blocking_lock();
-            security.kill_everything()
-        })
-        .await
-        .map_err(|e| format!("wipe task failed: {}", e))?;
-        wipe_result.map_err(|e| {
-            log::error!("Secure delete failed: {}", e);
-            e.to_string()
-        })?;
-
-        // Wipe the log directory too — noid.log may contain peer ids,
-        // message ids and network addresses from this session.
-        let log_dir = state.app_log_dir.clone();
-        if log_dir.exists() {
-            if let Err(e) = crate::security::secure_delete::secure_delete_dir(&log_dir) {
-                log::error!("Log dir wipe failed: {}", e);
-            }
-        }
+        // OPT-R03: one destructive pipeline — see run_wipe_workflow.
+        crate::run_wipe_workflow(state.inner()).await?;
 
         Ok(AuthResponse {
             success: true,

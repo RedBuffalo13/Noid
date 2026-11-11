@@ -396,6 +396,7 @@ header {
 
 /* Chat Item */
 .chat-card {
+  position: relative; /* FE-A12: containing block for .unread-badge */
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   padding: 16px;

@@ -27,6 +27,24 @@ pub async fn setup_pins(
     // all field-encrypted data — refuse once security state exists. The
     // check sits under the security lock so concurrent setup calls race
     // on the mutex, not on filesystem state.
+    // SEC-A03: the resume branch below verifies the stored TruePin — apply
+    // the same account-wide lockout as login, or setup becomes an
+    // unmetered PIN oracle. (KillPin is not touched here; its exemption
+    // from lockout lives in login.rs.)
+    {
+        let auth_manager = state.auth_manager.lock().await;
+        let remaining = auth_manager.lockout_remaining_secs().await;
+        if remaining > 0 {
+            return Ok(AuthResponse {
+                success: false,
+                message: format!("Too many failed attempts. Try again in {}s", remaining),
+                kind: AuthOutcome::LockedOut,
+                retry_after_secs: Some(remaining),
+                attempts_remaining: Some(0),
+            });
+        }
+    }
+
     let security_arc = state.security.clone();
     let key = tokio::task::spawn_blocking(move || -> Result<Option<[u8; 32]>, String> {
         let mut security = security_arc.blocking_lock();
@@ -37,9 +55,18 @@ pub async fn setup_pins(
             // wizard — accept the SAME true PIN as a no-op success; a
             // different PIN is a real error (rotation would orphan data).
             return match security.verify_true_pin(&true_pin) {
-                // Mirrors a fresh setup: master key derived, audit keyed.
                 Ok(true) => {
                     security.derive_key(&true_pin).map_err(|e| e.to_string())?;
+                    // SEC-A06: if the first setup died between the two hash
+                    // writes, kill.hash is missing and `is_first_run` keeps
+                    // routing here — repair the pair now that the caller
+                    // re-authenticated with the true PIN. An existing
+                    // kill.hash is never silently replaced.
+                    if !security.is_kill_pin_configured() {
+                        security
+                            .set_kill_pin(&kill_pin)
+                            .map_err(|e| e.to_string())?;
+                    }
                     Ok(security.get_master_key().ok())
                 }
                 Ok(false) => Err("PINs are already configured".into()),
@@ -68,7 +95,47 @@ pub async fn setup_pins(
         Ok(key)
     })
     .await
-    .map_err(|e| format!("setup task failed: {}", e))??;
+    .map_err(|e| format!("setup task failed: {}", e))?;
+
+    let key = match key {
+        Ok(k) => k,
+        Err(e) if e == "PINs are already configured" => {
+            // SEC-A03: a wrong true_pin guess on the resume path counts as
+            // a credential attempt — same accounting as login failures.
+            let auth_manager = state.auth_manager.lock().await;
+            let count = auth_manager.increment_failed_attempt().await;
+            let delay = auth_manager.failed_attempt_delay().await;
+            drop(auth_manager);
+            tokio::time::sleep(delay).await;
+            let auth_manager = state.auth_manager.lock().await;
+            let remaining = auth_manager.lockout_remaining_secs().await;
+            if remaining > 0 {
+                return Ok(AuthResponse {
+                    success: false,
+                    message: format!("Too many failed attempts. Try again in {}s", remaining),
+                    kind: AuthOutcome::LockedOut,
+                    retry_after_secs: Some(remaining),
+                    attempts_remaining: Some(0),
+                });
+            }
+            return Ok(AuthResponse {
+                success: false,
+                message: e,
+                kind: AuthOutcome::Failed,
+                retry_after_secs: None,
+                attempts_remaining: Some(
+                    crate::auth::LOCKOUT_THRESHOLD.saturating_sub(count),
+                ),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+
+    // SEC-A03: accepted credentials reset the attempt counter, as in login.
+    {
+        let auth_manager = state.auth_manager.lock().await;
+        auth_manager.reset_attempts().await;
+    }
     if let Some(key) = key {
         state.audit_log.set_key(key);
     }

@@ -82,8 +82,10 @@ impl Database {
                     log::warn!("One-time prekey already consumed");
                     return Ok(None);
                 }
-                // Mark as consumed
-                sqlx::query("UPDATE prekeys SET is_consumed = 1 WHERE key_type = 'one_time_prekey' AND public_key = ?")
+                // SEC-A09: mark consumed AND erase the private half — the
+                // row stays only as public-key dedup metadata so a replayed
+                // init can't claim a live OTPK twice.
+                sqlx::query("UPDATE prekeys SET is_consumed = 1, private_key = X'' WHERE key_type = 'one_time_prekey' AND public_key = ?")
                     .bind(pub_key)
                     .execute(&self.pool)
                     .await?;

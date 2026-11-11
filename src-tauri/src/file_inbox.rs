@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 const INBOX_TTL: Duration = Duration::from_secs(600);
 /// At most 256 concurrent inbound transfers — bounds memory on flood.
 const MAX_INBOX_ENTRIES: usize = 256;
+/// RUN-A04: aggregate buffered bytes across ALL in-flight transfers.
+/// 256 × 64 MiB worst case was 16 GiB of RAM — cap the real working set.
+const MAX_INBOX_TOTAL_BYTES: u64 = 256 << 20;
 /// Matches `commands::file_transfer::MAX_FILE_BYTES` — a chunk stream
 /// declaring more is rejected before it can buffer gigabytes.
 const MAX_FILE_BYTES: u64 = 64 << 20;
@@ -30,10 +33,14 @@ pub struct FileInboxEntry {
     pub chunks: HashMap<u32, Vec<u8>>,
     pub received_bytes: u64,
     pub updated_at: Instant,
+    /// COORD-A01: false for a placeholder created by an early chunk while
+    /// the real offer was lost — declared_size is then the absolute cap,
+    /// not a contract to verify at completion.
+    pub has_offer: bool,
 }
 
 impl FileInboxEntry {
-    fn new(name: String, declared_size: u64, total_chunks: u32) -> Self {
+    fn new(name: String, declared_size: u64, total_chunks: u32, has_offer: bool) -> Self {
         Self {
             name,
             declared_size,
@@ -41,6 +48,7 @@ impl FileInboxEntry {
             chunks: HashMap::new(),
             received_bytes: 0,
             updated_at: Instant::now(),
+            has_offer,
         }
     }
 }
@@ -76,7 +84,28 @@ pub fn register_offer(
     if declared_size == 0 || declared_size > MAX_FILE_BYTES {
         return false;
     }
-    if map.contains_key(key) {
+    // RUN-A04: the offer's remaining allowance must fit the global budget
+    // even before a byte arrives — a flood of max-size offers is memory
+    // pressure without a single chunk.
+    let buffered: u64 = map.values().map(|e| e.received_bytes).sum();
+    if buffered + declared_size > MAX_INBOX_TOTAL_BYTES {
+        log::warn!("file_inbox total budget exceeded — dropping offer {}", key);
+        return false;
+    }
+    if let Some(entry) = map.get_mut(key) {
+        // COORD-A01: a late real offer upgrades a lost-offer placeholder —
+        // apply its name/size and validate what already arrived. An entry
+        // that already has an offer is idempotent.
+        if !entry.has_offer {
+            if entry.received_bytes > declared_size {
+                log::warn!("file_inbox {}: buffered bytes exceed late-offer size", key);
+                map.remove(key);
+                return false;
+            }
+            entry.name = sanitize_name(name);
+            entry.declared_size = declared_size;
+            entry.has_offer = true;
+        }
         return true;
     }
     if map.len() >= MAX_INBOX_ENTRIES {
@@ -85,7 +114,7 @@ pub fn register_offer(
     }
     map.insert(
         key.to_string(),
-        FileInboxEntry::new(sanitize_name(name), declared_size, u32::MAX),
+        FileInboxEntry::new(sanitize_name(name), declared_size, u32::MAX, true),
     );
     true
 }
@@ -106,6 +135,13 @@ pub fn ingest_chunk(
     {
         return None;
     }
+    // RUN-A04: aggregate budget on every accepted byte — a complete-set
+    // final chunk is small, but placeholder entries without offers would
+    // otherwise grow the total past MAX_INBOX_TOTAL_BYTES one at a time.
+    let buffered: u64 = map.values().map(|e| e.received_bytes).sum();
+    if buffered + data.len() as u64 > MAX_INBOX_TOTAL_BYTES {
+        return None;
+    }
     let entry = match map.get_mut(key) {
         Some(e) => e,
         // Chunk without a registered offer — create a placeholder so a
@@ -114,9 +150,15 @@ pub fn ingest_chunk(
             if map.len() >= MAX_INBOX_ENTRIES {
                 return None;
             }
+            // RUN-A04: placeholder chunks count against the same budget —
+            // a chunk flood without offers must not bypass the cap.
+            let buffered: u64 = map.values().map(|e| e.received_bytes).sum();
+            if buffered + data.len() as u64 > MAX_INBOX_TOTAL_BYTES {
+                return None;
+            }
             map.insert(
                 key.to_string(),
-                FileInboxEntry::new("file".to_string(), MAX_FILE_BYTES, total_chunks),
+                FileInboxEntry::new("file".to_string(), MAX_FILE_BYTES, total_chunks, false),
             );
             map.get_mut(key)?
         }
@@ -129,7 +171,9 @@ pub fn ingest_chunk(
         map.remove(key);
         return None;
     }
-    if entry.received_bytes + data.len() as u64 > MAX_FILE_BYTES.max(entry.declared_size) {
+    // COORD-A01: the cap is the DECLARED size — `.max()` used to let every
+    // transfer reach the absolute 64 MiB ceiling regardless of its offer.
+    if entry.received_bytes + data.len() as u64 > entry.declared_size.min(MAX_FILE_BYTES) {
         log::warn!("file_inbox {}: received bytes exceed declared size", key);
         map.remove(key);
         return None;
@@ -143,8 +187,16 @@ pub fn ingest_chunk(
         return None;
     }
 
-    // Complete — write ordered bytes under `out_dir`.
+    // COORD-A01: with an explicit offer the byte count must match exactly —
+    // a short "complete" set means chunks are missing/corrupt, not a file.
     let entry = map.remove(key)?;
+    if entry.has_offer && entry.received_bytes != entry.declared_size {
+        log::warn!(
+            "file_inbox {}: {} bytes received but {} declared — dropped",
+            key, entry.received_bytes, entry.declared_size
+        );
+        return None;
+    }
     let mut bytes = Vec::with_capacity(entry.received_bytes as usize);
     for i in 0..entry.total_chunks {
         match entry.chunks.get(&i) {
@@ -168,16 +220,35 @@ pub fn ingest_chunk(
         .and_then(|s| s.to_str())
         .map(|s| format!(".{}", s))
         .unwrap_or_default();
-    let mut path = out_dir.join(&entry.name);
-    for n in 1..1000u32 {
-        if !path.exists() { break; }
-        path = out_dir.join(format!("{}-{}{}", stem, n, ext));
-    }
-    match std::fs::write(&path, &bytes) {
-        Ok(()) => Some(path),
-        Err(e) => {
-            log::warn!("file_inbox: write {} failed: {}", path.display(), e);
-            None
+    // COORD-A02: exclusive create on every candidate — exists-then-write
+    // raced concurrent same-name completes, and exhausting the loop used to
+    // fall through to an unconditional overwrite of the LAST candidate.
+    let mut candidates = std::iter::once(out_dir.join(&entry.name)).chain(
+        (1..1000u32).map(|n| out_dir.join(format!("{}-{}{}", stem, n, ext))),
+    );
+    loop {
+        let Some(path) = candidates.next() else {
+            log::warn!("file_inbox: all 1000 names taken for {}", entry.name);
+            return None;
+        };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                use std::io::Write as _;
+                return match f.write_all(&bytes) {
+                    Ok(()) => Some(path),
+                    Err(e) => {
+                        log::warn!("file_inbox: write {} failed: {}", path.display(), e);
+                        drop(f);
+                        let _ = std::fs::remove_file(&path);
+                        None
+                    }
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                log::warn!("file_inbox: create {} failed: {}", path.display(), e);
+                return None;
+            }
         }
     }
 }

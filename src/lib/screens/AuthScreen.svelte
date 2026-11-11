@@ -2,6 +2,7 @@
   import { authStore } from "#lib/stores";
   import { uiStore } from "#lib/stores";
   import { t } from "#lib/i18n/index.svelte";
+  import PinEntry from "#lib/components/auth/PinEntry.svelte";
 
   // ---- Setup wizard state (4 steps: main → confirm → kill → confirm) ----
   // The first-run form used text inputs that fell below the keyboard/edge on
@@ -18,24 +19,9 @@
     { titleKey: "auth.setup.kill.confirm", hintKey: "auth.setup.kill.hint" },
   ] as const;
 
-  const addPin = (key: string) => {
-    if (authStore.busy) return;
-    if (key === "C") authStore.pin = "";
-    else if (key === "⌫") authStore.pin = authStore.pin.slice(0, -1);
-    else if (key === "OK") authStore.handleAuth();
-    // Backend accepts 8–64 digit PINs — the numpad must not cap at 8 or a
-    // longer PIN set at setup can never be entered at login.
-    else if (authStore.pin.length < 64) authStore.pin += key;
-  };
-
-  const addWizardPin = (key: string) => {
-    if (authStore.busy) return;
-    if (key === "C") wizardPin = "";
-    else if (key === "⌫") wizardPin = wizardPin.slice(0, -1);
-    else if (key === "OK") wizardAdvance();
-    else if (wizardPin.length < 64) wizardPin += key;
-  };
-
+  // OPT-F03: the wizard and the login screen drive the SAME PinEntry
+  // numpad — key handling (C/⌫/OK/digits, 64-cap) lives in the component;
+  // each caller only wires its own pin + submit.
   function wizardAdvance() {
     if (wizardPin.length < 8) return; // OK is disabled below 8 anyway
     switch (setupStep) {
@@ -108,17 +94,14 @@
     {#if wizardPin.length > 0 && wizardPin.length < 8}
       <p class="pin-hint" aria-live="polite">{t("auth.pin.tooShort")}</p>
     {/if}
-    <div class="numpad" class:busy={authStore.busy}>
-      {#each ["1","2","3","4","5","6","7","8","9","⌫","0","OK"] as key}
-        <button
-          class="num-btn"
-          class:special={key === "OK" || key === "⌫"}
-          disabled={authStore.busy || (key === "OK" && wizardPin.length < 8)}
-          aria-label={key === "⌫" ? t("auth.pin.backspace") : key}
-          onclick={() => addWizardPin(key)}
-        >{key}</button>
-      {/each}
-    </div>
+    <PinEntry
+      pin={wizardPin}
+      oninput={(v) => wizardPin = v}
+      onsubmit={wizardAdvance}
+      busy={authStore.busy}
+      minLength={8}
+      showDisplay={false}
+    />
     <div class="wizard-actions">
       {#if setupStep > 0}
         <button class="btn-text" onclick={wizardBack} type="button">{t("nav.back")}</button>
@@ -161,17 +144,14 @@
     {#if authStore.pin.length > 0 && authStore.pin.length < 8}
       <p class="pin-hint" aria-live="polite">{t("auth.pin.tooShort")}</p>
     {/if}
-    <div class="numpad" class:busy={authStore.busy}>
-      {#each ["1","2","3","4","5","6","7","8","9","⌫","0","OK"] as key}
-        <button
-          class="num-btn"
-          class:special={key === "OK" || key === "⌫"}
-          disabled={authStore.busy || (key === "OK" && authStore.pin.length < 8)}
-          aria-label={key === "⌫" ? t("auth.pin.backspace") : key}
-          onclick={() => addPin(key)}
-        >{key}</button>
-      {/each}
-    </div>
+    <PinEntry
+      pin={authStore.pin}
+      oninput={(v) => authStore.pin = v}
+      onsubmit={() => authStore.handleAuth()}
+      busy={authStore.busy}
+      minLength={8}
+      showDisplay={false}
+    />
   </div>
 {/if}
 
@@ -218,10 +198,6 @@
     font-weight: 600;
     max-width: 320px;
     text-align: center;
-  }
-  .numpad.busy {
-    opacity: 0.5;
-    pointer-events: none;
   }
   .busy-indicator {
     display: flex;

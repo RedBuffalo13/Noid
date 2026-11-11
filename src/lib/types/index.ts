@@ -6,7 +6,7 @@ export interface Message {
   timestamp: number;
   delivered?: boolean;
   seen?: boolean;
-  status?: 'sending' | 'sent' | 'delivered' | 'failed';
+  status?: 'sending' | 'sent' | 'queued' | 'delivered' | 'failed';
 }
 
 export interface Chat {

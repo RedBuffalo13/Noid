@@ -201,13 +201,18 @@ pub(crate) async fn handle_request_received(
                                         &base64::engine::general_purpose::STANDARD, b64,
                                     ) {
                                         let mut inbox = app_state.file_inbox.lock().await;
+                                        // RUN-A03: same dedicated receive
+                                        // root as the other ingest path —
+                                        // attachments must not land in the
+                                        // app-data root next to keys/DB.
+                                        let out_dir = app_state.app_data_dir.join("received");
                                         if let Some(path) = crate::file_inbox::ingest_chunk(
                                             &mut inbox,
                                             &format!("{}:{}", from, offer_id),
                                             idx,
                                             total,
                                             &chunk,
-                                            &app_state.app_data_dir,
+                                            &out_dir,
                                         ) {
                                             safe_emit(handle, "file-received", serde_json::json!({
                                                 "from": from,
@@ -215,6 +220,10 @@ pub(crate) async fn handle_request_received(
                                                 "path": path,
                                             }));
                                             crate::android_bridge::notify_new_message(handle, from);
+                                            // NET-A05: durable-write ack —
+                                            // tell the sender the file is
+                                            // on disk, not just on the wire.
+                                            send_file_ack(handle, from, offer_id).await;
                                         }
                                     }
                                 }
@@ -511,6 +520,17 @@ pub(crate) async fn handle_request_received(
             );
             Some("OK")
         }
+        MessageType::FileAck { offer_id } => {
+            // NET-A05: our offered file reached durable storage — tell the
+            // UI so the outgoing attachment can show "delivered", not
+            // merely "chunks accepted".
+            safe_emit(
+                handle,
+                "file-delivered",
+                serde_json::json!({"from": from, "offer_id": offer_id}),
+            );
+            Some("OK")
+        }
         MessageType::TypingIndicator => {
             let app_state = handle.state::<AppState>();
             let known = app_state.ratchet_sessions.has_session(from).await || {
@@ -617,6 +637,7 @@ pub(crate) async fn handle_request_received(
                         "offer_id": offer_id,
                         "path": path.to_string_lossy(),
                     }));
+                    send_file_ack(handle, from, offer_id).await;
                 }
                 Some("OK")
             } else {
@@ -649,4 +670,28 @@ pub(crate) async fn handle_request_received(
             Some("OK")
         }
     }
+}
+
+/// NET-A05: confirm durable file receipt to the sender — same unwrapped
+/// typed-message convention as ReadReceipt/TypingIndicator (no secret
+/// payload, goes through the bounded command channel).
+async fn send_file_ack(handle: &tauri::AppHandle, peer_id: &str, offer_id: &str) {
+    let app_state = handle.state::<AppState>();
+    let Some(tx) = app_state.p2p() else { return };
+    let my_id = app_state.my_id.lock().await.clone();
+    let msg = NoidMessage {
+        sender: my_id,
+        content: String::new(),
+        msg_type: MessageType::FileAck { offer_id: offer_id.to_string() },
+        timestamp: Some(chrono::Utc::now().to_rfc3339_opts(
+            chrono::SecondsFormat::Millis,
+            true,
+        )),
+        id: uuid::Uuid::new_v4().to_string(),
+    };
+    let _ = crate::send_p2p_cmd(&tx, P2PCommand::SendMessage {
+        peer_id: peer_id.to_string(),
+        msg,
+    })
+    .await;
 }

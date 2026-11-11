@@ -4,6 +4,7 @@ import { profileStore } from "./profile_store.svelte";
 import { contactStore } from "./contact_store.svelte";
 import { uiStore } from "./ui_store.svelte";
 import { usernameStore } from "./username_store.svelte";
+import { chatStore } from "./chat_store.svelte";
 
 let screen = $state("checking");
 let pin = $state("");
@@ -69,6 +70,11 @@ export const authStore = {
         if (res.kind === "wiped") {
           uiStore.showToast(t("auth.toast.wiped"));
           pin = "";
+          // FE-A01: revoke every plaintext surface NOW — the database is
+          // gone; chat history/drafts/contacts must not linger in stores.
+          chatStore.revokeSession();
+          contactStore.revokeSession();
+          uiStore.resetNav("chats");
           // FE-13: wipe destroyed the keys — the next step is re-setup, not
           // another PIN attempt against a vault that no longer exists.
           screen = "setup";
@@ -76,6 +82,8 @@ export const authStore = {
           await profileStore.loadProfile();
           await contactStore.loadContacts();
           await usernameStore.loadUsername();
+          // FE-A08: restore persisted unread badges with the session.
+          await chatStore.loadUnreadCounts();
           uiStore.resetNav("chats");
           screen = "main";
         }

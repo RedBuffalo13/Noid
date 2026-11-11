@@ -454,6 +454,27 @@ impl Database {
         Ok(res.rows_affected() > 0)
     }
 
+    /// NET-A07: claim a room control id — returns true on first sight,
+    /// false when this exact control payload was already applied (covers
+    /// post-restart replays that outlive the in-memory gossipsub dedup).
+    pub async fn claim_room_control(&self, room_id: &str, control_id: &str) -> Result<bool> {
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO room_control_seen (room_id, control_id) VALUES (?, ?)",
+        )
+        .bind(room_id)
+        .bind(control_id)
+        .execute(&self.pool)
+        .await?;
+        // Bound the table — control ids beyond 30 days can never replay
+        // past the envelope freshness check anyway.
+        let _ = sqlx::query(
+            "DELETE FROM room_control_seen WHERE applied_at < datetime('now', '-31 days')",
+        )
+        .execute(&self.pool)
+        .await;
+        Ok(res.rows_affected() > 0)
+    }
+
     /// Room history: (id, sender_peer_id, content, timestamp) — decrypted.
     pub async fn get_room_messages(
         &self,

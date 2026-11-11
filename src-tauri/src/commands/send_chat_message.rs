@@ -48,32 +48,62 @@ async fn persist_local_copy(msg_id: &str, my_id: &str, peer_id: &str, content: &
     }
 }
 
+/// Outcome of preparing a wire ciphertext — the three failure modes have
+/// different recoveries and must not collapse into one "try handshake".
+enum WirePrepared {
+    /// Ciphertext produced AND the advanced ratchet state durably saved.
+    Encrypted(RatchetMessage),
+    /// No session at all — queue and run X3DH.
+    NoSession,
+    /// A session exists but its send chain is not initialised (Bob before
+    /// the first inbound DH ratchet) — queue; flush on readiness.
+    NotReady,
+    /// Encrypt advanced in-memory state but the durable save failed —
+    /// emitting the ciphertext would let a restart reuse a stale chain
+    /// position, so it must NOT be sent. Queue; the pending flush
+    /// re-encrypts (skipped keys on the peer cover the unused position).
+    PersistFailed,
+}
+
 /// Encrypt for the wire with Double Ratchet, lazily restoring the session
-/// from the DB. Returns `Ok(None)` when no session exists — the caller then
-/// pends the message and initiates X3DH (no plaintext fallback).
-async fn encrypt_for_wire(peer_id: &str, content: &str, state: &State<'_, AppState>) -> Option<RatchetMessage> {
+/// from the DB. SEC-A08: a wire ciphertext is only released once its
+/// post-encrypt ratchet state is durably committed.
+async fn encrypt_for_wire(peer_id: &str, content: &str, state: &State<'_, AppState>) -> WirePrepared {
     if !state.ratchet_sessions.has_session(peer_id).await {
         if let Ok(db) = state.require_db().await {
             let _ = state.ratchet_sessions.load_session(&db, peer_id).await;
         }
     }
+    if !state.ratchet_sessions.has_session(peer_id).await {
+        log::debug!("No ratchet session with {}, queuing message + initiating X3DH", peer_id);
+        return WirePrepared::NoSession;
+    }
+    if !state.ratchet_sessions.can_send(peer_id).await {
+        // NET-A01: Bob-side session waiting on the peer's first DH
+        // ratchet — queue instead of emitting a public-derivable key or
+        // starting a redundant handshake.
+        return WirePrepared::NotReady;
+    }
     match state.ratchet_sessions.encrypt(peer_id, content.as_bytes()).await {
         Ok(Some(ratchet_msg)) => {
             log::debug!("Message encrypted with Double Ratchet for {}", peer_id);
-            // Persist the post-encrypt ratchet state (lock released across
-            // the await inside save_session — RC23).
-            if let Ok(db) = state.require_db().await {
-                let _ = state.ratchet_sessions.save_session(&db, peer_id).await;
+            let db = match state.require_db().await {
+                Ok(db) => db,
+                Err(e) => {
+                    log::error!("Ratchet state save unavailable for {}: {} — refusing wire send", peer_id, e);
+                    return WirePrepared::PersistFailed;
+                }
+            };
+            if let Err(e) = state.ratchet_sessions.save_session(&db, peer_id).await {
+                log::error!("Ratchet state persist failed for {}: {} — refusing wire send", peer_id, e);
+                return WirePrepared::PersistFailed;
             }
-            Some(ratchet_msg)
+            WirePrepared::Encrypted(ratchet_msg)
         }
-        Ok(None) => {
-            log::debug!("No ratchet session with {}, queuing message + initiating X3DH", peer_id);
-            None
-        }
+        Ok(None) => WirePrepared::NoSession,
         Err(e) => {
             log::warn!("Ratchet encryption failed for {}: {}, queuing message", peer_id, e);
-            None
+            WirePrepared::NotReady
         }
     }
 }
@@ -162,19 +192,31 @@ pub async fn send_chat_message(
     let my_id = state.my_id.lock().await.clone();
     let msg_id = Uuid::new_v4().to_string();
 
-    persist_local_copy(&msg_id, &my_id, &peer_id, &content, &state).await;
-    log::info!("send_chat_message: history persistence finished id={}", msg_id);
-    let ratchet_msg_opt = encrypt_for_wire(&peer_id, &content, &state).await;
+    // Durable prepare order: pending row first (survives a crash before
+    // the wire send), then encrypt + ratchet-state commit, then wire.
     persist_pending(&peer_id, &content, &msg_id, &state).await;
     log::info!("send_chat_message: outbox persistence finished id={}", msg_id);
+    persist_local_copy(&msg_id, &my_id, &peer_id, &content, &state).await;
+    log::info!("send_chat_message: history persistence finished id={}", msg_id);
+    let prepared = encrypt_for_wire(&peer_id, &content, &state).await;
 
-    match ratchet_msg_opt {
-        None => {
+    match prepared {
+        WirePrepared::NoSession => {
             log::info!("send_chat_message: no ratchet session for {} — handshake requested", peer_id);
             request_handshake(&peer_id, &state).await;
             Ok(msg_id)
         }
-        Some(ratchet_msg) => {
+        WirePrepared::NotReady => {
+            // Session exists but its send chain awaits the peer's first DH
+            // ratchet — the pending flush retries once it is ready.
+            log::info!("send_chat_message: session with {} not send-ready — message stays pending", peer_id);
+            Ok(msg_id)
+        }
+        WirePrepared::PersistFailed => {
+            log::error!("send_chat_message: ratchet state not durable for {} — message stays pending", peer_id);
+            Ok(msg_id)
+        }
+        WirePrepared::Encrypted(ratchet_msg) => {
             log::info!("send_chat_message: dispatching RatchetChat to {}", peer_id);
             dispatch_wire_message(&peer_id, my_id, msg_id.clone(), ratchet_msg, &state)
                 .await?;

@@ -12,7 +12,11 @@ vi.mock("./profile_store.svelte", () => ({
 }));
 
 vi.mock("./contact_store.svelte", () => ({
-  contactStore: { loadContacts: vi.fn() },
+  contactStore: { loadContacts: vi.fn(), revokeSession: vi.fn() },
+}));
+
+vi.mock("./chat_store.svelte", () => ({
+  chatStore: { revokeSession: vi.fn(), loadUnreadCounts: vi.fn() },
 }));
 
 vi.mock("./ui_store.svelte", () => ({

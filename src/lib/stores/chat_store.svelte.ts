@@ -1,5 +1,5 @@
 import { t } from "#lib/i18n/index.svelte";
-import { getChatMessages as svcGetChatMessages, getNewMessagesSince as svcGetNewMessagesSince, getAllMissedMessages as svcGetAllMissedMessages, sendChatMessage as svcSendChatMessage, sendTypingIndicator as svcSendTypingIndicator, getPendingMessageIds as svcGetPendingMessageIds, deleteChat as svcDeleteChat } from "#lib/services";
+import { getChatMessages as svcGetChatMessages, getNewMessagesSince as svcGetNewMessagesSince, getAllMissedMessages as svcGetAllMissedMessages, sendChatMessage as svcSendChatMessage, sendTypingIndicator as svcSendTypingIndicator, getPendingMessageIds as svcGetPendingMessageIds, deleteChat as svcDeleteChat, setUnreadCount as svcSetUnreadCount, getUnreadCounts as svcGetUnreadCounts } from "#lib/services";
 import { tick } from "svelte";
 import type { Message } from "#lib/types";
 import { SvelteMap } from "svelte/reactivity";
@@ -12,6 +12,12 @@ let myId = $state("");
 // FE-09: SvelteMap — badge reads getUnread() live; plain Map mutations
 // never re-rendered and needed a loadContacts poll to surface.
 let unreadCount = new SvelteMap<string, number>();
+// FE-A04: delivery ACKs can arrive before send_chat_message resolves and
+// the optimistic row swaps temp→real id. Buffer them per peer and apply on
+// the swap instead of dropping the receipt.
+const pendingDelivery = new Map<string, Set<string>>();
+// OPT-F06: peers with a missed-message sync already in flight.
+const syncInflight = new Set<string>();
 let lastTypingSent = 0;
 // FE-30: incoming typing events live here — rendered inside the chat view,
 // not as a toast that spams on every keystroke-burst.
@@ -39,6 +45,15 @@ function trimMessages(list: Message[]): Message[] {
 export const chatStore = {
   get messages() { return messages; },
   set messages(val: Message[]) { messages = val; },
+  // FE-A01: KillPin wipe — drop every plaintext remnant immediately:
+  // history, open chat, draft, unread counters and buffered ACKs.
+  revokeSession() {
+    messages = [];
+    currentPeer = "";
+    inputMsg = "";
+    unreadCount.clear();
+    pendingDelivery.clear();
+  },
   get currentPeer() { return currentPeer; },
   set currentPeer(val: string) { currentPeer = val; },
   get inputMsg() { return inputMsg; },
@@ -113,7 +128,13 @@ export const chatStore = {
 
     try {
       const msgId = await svcSendChatMessage(currentPeer, content);
-      markOptimistic({ id: msgId, status: "sent" as const });
+      const ackedEarly = pendingDelivery.get(currentPeer)?.has(msgId) ?? false;
+      pendingDelivery.get(currentPeer)?.delete(msgId);
+      markOptimistic({
+        id: msgId,
+        status: ackedEarly ? ("delivered" as const) : ("sent" as const),
+        delivered: ackedEarly,
+      });
     } catch (e) {
       console.error("Failed to send:", e);
       markOptimistic({ status: "failed" as const, delivered: false });
@@ -160,17 +181,39 @@ export const chatStore = {
     });
   },
 
-  // TI-4: precise delivery — mark only the acked message, not the whole
-  // peer's history. Used by `message-delivered` (direct ack) and
-  // `mailbox-stored` (queued for offline delivery).
-  markMessageDelivered(peerId: string, messageId: string) {
+  // NET-A04: mailbox-stored ≠ delivered — the envelope reached the peer's
+  // mailbox, not the peer. Distinct status so ✓✓ stays honest.
+  markMessageQueued(peerId: string, messageId: string) {
     if (peerId !== currentPeer) return;
     messages = messages.map(msg => {
       if (msg.id === messageId && msg.from === "Me") {
-        return { ...msg, status: "delivered" as const, delivered: true };
+        return { ...msg, status: "queued" as const };
       }
       return msg;
     });
+  },
+
+  // TI-4: precise delivery — mark only the acked message, not the whole
+  // peer's history. Used by `message-delivered` (direct peer ack);
+  // `mailbox-stored` now routes to markMessageQueued.
+  markMessageDelivered(peerId: string, messageId: string) {
+    // Buffer first — the row may still carry its temp id, or the chat may
+    // not be open; drop only after the swap had its chance.
+    let matched = false;
+    if (peerId === currentPeer) {
+      messages = messages.map(msg => {
+        if (msg.id === messageId && msg.from === "Me") {
+          matched = true;
+          return { ...msg, status: "delivered" as const, delivered: true };
+        }
+        return msg;
+      });
+    }
+    if (!matched) {
+      const set = pendingDelivery.get(peerId) ?? new Set<string>();
+      set.add(messageId);
+      pendingDelivery.set(peerId, set);
+    }
   },
 
   markPendingSent(peerId: string) {
@@ -184,6 +227,10 @@ export const chatStore = {
 
   async checkMissedMessagesFromPeer(peerId: string) {
     if (currentPeer !== peerId) return;
+    // OPT-F06: `peer-connected` and `peer-online` both fire this on one
+    // reconnect — coalesce concurrent triggers into a single sync owner.
+    if (syncInflight.has(peerId)) return;
+    syncInflight.add(peerId);
     try {
       const lastMessageTime = messages.length > 0
         ? new Date(Math.max(...messages.map(m => m.timestamp))).toISOString()
@@ -212,6 +259,8 @@ export const chatStore = {
       }
     } catch (e) {
       console.error("Error fetching new messages:", e);
+    } finally {
+      syncInflight.delete(peerId);
     }
   },
 
@@ -259,7 +308,15 @@ export const chatStore = {
       if (chatMessages.length !== messages.length) {
         const pendingIds = new Set(await svcGetPendingMessageIds(peer).catch(() => []));
         if (peer !== currentPeer) return; // FE-01
-        messages = trimMessages(chatMessages.map(([id, senderId, content, timestamp]: [string, string, string, string]) => ({
+        const dbIds = new Set(chatMessages.map(([id]: [string, string, string, string]) => id));
+        // OPT-F04: wholesale replace dropped in-flight optimistic bubbles
+        // (temp id, not yet in DB) — the row vanished mid-send then popped
+        // back. Merge: keep local rows the DB doesn't know yet, sort by ts.
+        const inFlight = messages.filter(
+          (m) => m.from === "Me" && !!m.id && !dbIds.has(m.id) &&
+            (m.status === "sending" || m.id.startsWith("optimistic-"))
+        );
+        const merged = chatMessages.map(([id, senderId, content, timestamp]: [string, string, string, string]) => ({
           id,
           from: senderId === myId ? "Me" : senderId,
           content,
@@ -268,20 +325,34 @@ export const chatStore = {
           delivered: !pendingIds.has(id),
           status: pendingIds.has(id) ? "sent" as const : undefined,
           seen: false
-        })));
+        }));
+        messages = trimMessages(
+          [...merged, ...inFlight].sort((a, b) => a.timestamp - b.timestamp)
+        );
         autoScroll();
       }
     } catch (e) {}
   },
 
-  // Phase D.1: Unread count management
+  // Phase D.1: Unread count management — FE-A08: every change is
+  // persisted; a restart reloads the live set instead of zeroing it.
   incrementUnread(peerId: string) {
-    const current = unreadCount.get(peerId) || 0;
-    unreadCount.set(peerId, current + 1);
+    const next = (unreadCount.get(peerId) || 0) + 1;
+    unreadCount.set(peerId, next);
+    svcSetUnreadCount(peerId, next).catch(() => {});
   },
 
   clearUnread(peerId: string) {
     unreadCount.set(peerId, 0);
+    svcSetUnreadCount(peerId, 0).catch(() => {});
+  },
+
+  async loadUnreadCounts() {
+    try {
+      for (const [peerId, count] of await svcGetUnreadCounts()) {
+        unreadCount.set(peerId, count);
+      }
+    } catch { /* counts stay in-memory only — non-fatal */ }
   },
 
   getUnread(peerId: string): number {

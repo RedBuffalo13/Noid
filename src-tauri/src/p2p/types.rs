@@ -209,6 +209,11 @@ pub enum MessageType {
     ReadReceipt {
         message_id: String,
     },
+    /// NET-A05: receiver confirms the file landed durably on disk —
+    /// per-chunk MessageDelivered only proves transport, not completion.
+    FileAck {
+        offer_id: String,
+    },
     TypingIndicator,
     Ping,
     Pong,
@@ -363,11 +368,13 @@ pub enum P2PEvent {
     /// A verified, decrypted room control payload that arrived inside a
     /// room-topic envelope (serialized `RoomPayload`, non-Chat variant).
     /// Delivered to the app layer because membership/meta changes need
-    /// DB access the node does not have.
+    /// DB access the node does not have. `control_id` is the signed
+    /// envelope's msg_id — the durable replay-dedup key (NET-A07).
     RoomControl {
         room_id: String,
         sender: String,
         payload: String,
+        control_id: String,
     },
     /// A room envelope verified by signature but undecryptable with the
     /// current key — the stored key epoch is stale (missed a rekey).

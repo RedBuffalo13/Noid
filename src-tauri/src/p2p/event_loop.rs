@@ -1,10 +1,10 @@
 use libp2p::futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{autonat, gossipsub, identify, kad, mdns, ping, relay, request_response, upnp, Multiaddr, PeerId};
-use sha2::Digest;
 use tokio::sync::mpsc;
 
 use crate::p2p::behaviour::NoidBehaviourEvent;
+use crate::p2p::get_record_miss::TerminalCause;
 use crate::p2p::node::P2PNode;
 use crate::p2p::relay_status::NatStatus;
 use crate::p2p::types::{DHTUserRecord, P2PCommand, P2PEvent};
@@ -1681,6 +1681,7 @@ impl P2PNode {
                                                             room_id,
                                                             sender: env.sender_peer_id,
                                                             payload,
+                                                            control_id: env.msg_id,
                                                         }).await;
                                                     }
                                                     Err(_) => continue,
@@ -2459,7 +2460,7 @@ impl P2PNode {
                     })) => {
                         // Successful completion follows FoundRecord; it is
                         // not a NotFound result. Resolve only leftover state.
-                        if self.resolve_get_record_miss(&id, &event_tx).await {
+                        if self.resolve_get_record_miss(&id, TerminalCause::Completed, &event_tx).await {
                             continue;
                         }
                     }
@@ -2474,186 +2475,19 @@ impl P2PNode {
                         // pending map: the UI spinner waits for the result
                         // event and hangs forever without one.
                         log::debug!("DHT GetRecord failed: {:?}", e);
-                        // Phase A.3: Check if this was a prekey query
-                        if let Some(peer_id) = self.pending_prekey_queries.remove(&id) {
-                            // X3DH-07: a direct request may still answer —
-                            // emitting None here would fail the handshake
-                            // while the peer is about to reply.
-                            if self.prekey_direct_pending(&peer_id)
-                                || self.prekey_recently_resolved(&peer_id)
-                            {
-                                continue;
-                            }
-                            // DHT-04: the local fallback copy answers a
-                            // failed network query — a self-published bundle
-                            // or a cached peer bundle must not read as
-                            // "absent" just because the DHT errored.
-                            let local = self
-                                .local_dht_get(&Self::prekey_dht_key(&peer_id).to_vec())
-                                .and_then(|v| {
-                                    serde_json::from_slice::<crate::security::PrekeyBundle>(&v)
-                                        .ok()
-                                        .filter(|b| {
-                                            b.owner_peer_id.as_deref() == Some(peer_id.as_str())
-                                                && crate::security::x3dh::verify_prekey_bundle(b)
-                                        })
-                                });
-                            if local.is_some() {
-                                log::debug!("Prekey bundle for {} served from local DHT store", peer_id);
-                                self.mark_prekey_resolved(&peer_id);
-                            } else {
-                                log::warn!("Prekey bundle not found in DHT for peer {} ({:?})", peer_id, e);
-                            }
-                            let _ = emit_ev(&event_tx, P2PEvent::PrekeyBundleRetrieved {
-                                peer_id,
-                                bundle: local,
-                            }).await;
-                            continue;
-                        }
-                        // Phase H.1: Check if this was a mailbox lookup
-                        // D18: surface the failure — pending rows wait for
-                        // the retry tick, and the caller must know the
-                        // resolver produced nothing instead of an answer.
-                        if let Some(peer_id) = self.pending_mailbox_lookups.remove(&id) {
-                            // DHT-04: same local fallback — a verified
-                            // SignedMailboxRecord in our store beats a
-                            // network miss.
-                            let local = self
-                                .local_dht_get(&Self::mailbox_dht_key(&peer_id).to_vec())
-                                .and_then(|v| {
-                                    serde_json::from_slice::<crate::p2p::types::SignedMailboxRecord>(
-                                        &v,
-                                    )
-                                    .ok()
-                                    .filter(|rec| {
-                                        rec.owner_peer_id == peer_id
-                                            && crate::security::identity_sig::verify_payload(
-                                                &rec.owner_peer_id,
-                                                &crate::p2p::types::mailbox_record_signing_payload(
-                                                    rec,
-                                                ),
-                                                &rec.signature,
-                                            )
-                                    })
-                                });
-                            if let Some(rec) = local {
-                                log::debug!(
-                                    "Mailbox record for {} served from local DHT store",
-                                    peer_id
-                                );
-                                self.mailbox_cache.insert(
-                                    peer_id.clone(),
-                                    (
-                                        rec.mailbox_peer_id.clone(),
-                                        rec.relay_addr.clone(),
-                                        std::time::Instant::now(),
-                                    ),
-                                );
-                                let _ = emit_ev(&event_tx, P2PEvent::MailboxNodeFound {
-                                    peer_id,
-                                    mailbox_peer_id: rec.mailbox_peer_id,
-                                    relay_addr: rec.relay_addr,
-                                }).await;
-                            } else {
-                                log::debug!("Mailbox node not found in DHT for peer {} ({:?})", peer_id, e);
-                                let _ = emit_ev(&event_tx, P2PEvent::MailboxNodeNotFound {
-                                    peer_id,
-                                }).await;
-                            }
-                            continue;
-                        }
-                        // D14: a publish gate query that resolved — NotFound
-                        // means the name is free; any other failure is
-                        // inconclusive and the publish is refused.
-                        if let Some((pub_username, value, signed)) = self.pending_username_publishes.remove(&id) {
-                            let not_found = matches!(e, kad::GetRecordError::NotFound { .. });
-                            if not_found {
-                                match self.commit_username_publish(&pub_username, value, signed) {
-                                    Ok(_) => {
-                                        let _ = emit_ev(&event_tx, P2PEvent::UsernameAvailabilityChecked {
-                                            username: pub_username,
-                                            available: true,
-                                            uncertain: false,
-                                        }).await;
-                                    }
-                                    Err(err) => {
-                                        log::error!("Username publish failed: {}", err);
-                                    }
-                                }
-                            } else {
-                                log::warn!("Username availability query for '{}' inconclusive ({:?}) — refusing publish", pub_username, e);
-                                let _ = emit_ev(&event_tx, P2PEvent::UsernameAvailabilityChecked {
-                                    username: pub_username,
-                                    available: false,
-                                    uncertain: true,
-                                }).await;
-                            }
-                            continue;
-                        }
-                        // D21: availability and lookup queries resolve into
-                        // their own events — never both.
-                        enum UsernameQueryKind { Availability, Lookup }
-                        let (lookup_username, kind) =
-                            if let Some(u) = self.pending_availability_queries.remove(&id) {
-                                (u, UsernameQueryKind::Availability)
-                            } else if let Some(u) = self.pending_lookups.remove(&id) {
-                                (u, UsernameQueryKind::Lookup)
-                            } else {
-                                // other GetRecord queries (random walks) end here silently
-                                continue;
-                            };
-                        // Check local DHT store as fallback — real data beats
-                        // a failed query regardless of the failure kind.
-                        let prefix = format!("noid:username:{}", lookup_username);
-                        let mut hasher = sha2::Sha256::new();
-                        sha2::Digest::update(&mut hasher, prefix.as_bytes());
-                        let key_hash = sha2::Digest::finalize(hasher);
-                        if let Some(value) = self.local_dht_get(&key_hash) {
-                            if let Ok(user_record) = serde_json::from_slice::<DHTUserRecord>(&value) {
-                                log::debug!("Found user '{}' in local DHT store (fallback)", lookup_username);
-                                match kind {
-                                    UsernameQueryKind::Lookup => {
-                                        let _ = emit_ev(&event_tx, P2PEvent::UserLookupResult {
-                                            username: lookup_username.clone(),
-                                            record: Some(user_record.clone()),
-                                        }).await;
-                                    }
-                                    UsernameQueryKind::Availability => {
-                                        let _ = emit_ev(&event_tx, P2PEvent::UsernameAvailabilityChecked {
-                                            username: lookup_username.clone(),
-                                            available: false,
-                                            uncertain: false,
-                                        }).await;
-                                    }
-                                }
-                                continue;
-                            }
-                        }
-                        // D6: NotFound = peers were queried and nobody holds
-                        // the record → genuinely available. Timeout /
-                        // QuorumFailed / an empty routing table = we never
-                        // got an answer → "unknown", not "available".
-                        let not_found = matches!(e, kad::GetRecordError::NotFound { .. });
-                        if not_found {
-                            log::debug!("DHT record not found for username '{}' - available", lookup_username);
+                        // OPT-R02: same pending-map/local-fallback resolution as the
+                        // completion arm — the cause only changes the username verdict:
+                        // a real NotFound proves absence (name is free); every other
+                        // failure is inconclusive, never permission to publish.
+                        let cause = if matches!(e, kad::GetRecordError::NotFound { .. }) {
+                            TerminalCause::NotFound
                         } else {
-                            log::warn!("DHT lookup for '{}' inconclusive ({:?}) - reporting unknown", lookup_username, e);
+                            TerminalCause::Inconclusive
+                        };
+                        if self.resolve_get_record_miss(&id, cause, &event_tx).await {
+                            continue;
                         }
-                        match kind {
-                            UsernameQueryKind::Availability => {
-                                let _ = emit_ev(&event_tx, P2PEvent::UsernameAvailabilityChecked {
-                                    username: lookup_username,
-                                    available: not_found,
-                                    uncertain: !not_found,
-                                }).await;
-                            }
-                            UsernameQueryKind::Lookup => {
-                                let _ = emit_ev(&event_tx, P2PEvent::UserLookupResult {
-                                    username: lookup_username,
-                                    record: None,
-                                }).await;
-                            }
-                        }
+                        // Other GetRecord queries (random walks) end here silently.
                     }
                     SwarmEvent::Behaviour(NoidBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
                         id,
@@ -3484,11 +3318,6 @@ impl P2PNode {
                 }
             }
         }
-    }
-
-    /// Phase B.2: Set the database reference for mailbox storage.
-    pub fn set_db(&mut self, db: std::sync::Arc<tokio::sync::Mutex<Option<crate::db::Database>>>) {
-        self.db = Some(db);
     }
 
     /// Phase J.2: Set the audit log reference for DHT/replay/screenshot logging.

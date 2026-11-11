@@ -8,6 +8,7 @@ docs/*
 
 # --- Private dev files ---
 AGENTS.md
+WORKRULES.md
 .devin/
 server/
 security_crash.md
