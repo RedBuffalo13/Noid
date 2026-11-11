@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="600" viewBox="0 0 1100 600" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#10b981"/></marker>
+    <marker id="arrx" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#ef4444"/></marker>
+  </defs>
+  <rect width="1100" height="600" fill="#0a0a0b" rx="16"/>
+  <text x="40" y="48" font-size="26" font-weight="700" fill="#e8e8ec">Кейс 1 — два телефона за NAT оператора, путь через onion</text>
+  <text x="40" y="76" font-size="14" fill="#9a9aa5">Публичного IP нет ни у кого — инвайт несёт эндпоинт /onion3/, цепочки делают остальное.</text>
+
+  <line x1="300" y1="180" x2="800" y2="180" stroke="#ef4444" stroke-width="2" stroke-dasharray="8 6" marker-end="url(#arrx)"/>
+  <text x="445" y="168" font-size="14" fill="#ef4444">прямой дозвон ✕ блокирует CGNAT</text>
+
+  <rect x="80" y="110" width="220" height="150" rx="16" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <rect x="160" y="124" width="60" height="10" rx="5" fill="#1e1e26"/>
+  <text x="110" y="165" font-size="19" font-weight="700" fill="#e8e8ec">Телефон A</text>
+  <text x="110" y="192" font-size="13" fill="#9a9aa5">Android · LTE</text>
+  <text x="110" y="214" font-size="13" fill="#9a9aa5">a3f9….onion</text>
+  <rect x="110" y="226" width="170" height="24" rx="12" fill="#8b5cf6" opacity="0.18"/>
+  <text x="122" y="243" font-size="12" fill="#8b5cf6">режим: additional</text>
+
+  <rect x="800" y="110" width="220" height="150" rx="16" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <rect x="880" y="124" width="60" height="10" rx="5" fill="#1e1e26"/>
+  <text x="830" y="165" font-size="19" font-weight="700" fill="#e8e8ec">Телефон B</text>
+  <text x="830" y="192" font-size="13" fill="#9a9aa5">Android · LTE</text>
+  <text x="830" y="214" font-size="13" fill="#9a9aa5">k7q2….onion</text>
+  <rect x="830" y="226" width="170" height="24" rx="12" fill="#8b5cf6" opacity="0.18"/>
+  <text x="842" y="243" font-size="12" fill="#8b5cf6">режим: additional</text>
+
+  <ellipse cx="550" cy="420" rx="280" ry="120" fill="#121216" stroke="url(#acc)" stroke-width="3"/>
+  <text x="430" y="368" font-size="20" font-weight="700" fill="#e8e8ec">Сеть Tor — цепочки в 3 хопа</text>
+  <g fill="#10b981" opacity="0.9">
+    <circle cx="420" cy="420" r="8"/><circle cx="520" cy="452" r="8"/><circle cx="640" cy="408" r="8"/>
+  </g>
+  <text x="395" y="400" font-size="11" fill="#9a9aa5">guard</text>
+  <text x="498" y="432" font-size="11" fill="#9a9aa5">middle</text>
+  <text x="620" y="388" font-size="11" fill="#9a9aa5">exit→HS</text>
+  <text x="400" y="508" font-size="13" fill="#9a9aa5">ISP видит: «устройство общается с Tor» — больше ничего</text>
+
+  <path d="M190 260 C 240 330, 330 370, 410 415" fill="none" stroke="#10b981" stroke-width="2.5" marker-end="url(#arr)"/>
+  <path d="M910 260 C 860 330, 760 370, 650 412" fill="none" stroke="#10b981" stroke-width="2.5" marker-end="url(#arr)"/>
+
+  <rect x="330" y="290" width="440" height="42" rx="10" fill="#17171f" stroke="#3a3a44"/>
+  <text x="348" y="317" font-size="14" fill="#e8e8ec">инвайт: noid:&lt;peerId&gt;@…/onion3/k7q2…:4020/p2p/&lt;id&gt;</text>
+
+  <rect x="80" y="540" width="330" height="34" rx="17" fill="#10b981" opacity="0.15"/>
+  <text x="96" y="562" font-size="13" fill="#10b981">IP не попадает в протокол</text>
+  <rect x="430" y="540" width="320" height="34" rx="17" fill="#8b5cf6" opacity="0.15"/>
+  <text x="446" y="562" font-size="13" fill="#8b5cf6">X3DH + Double Ratchet поверх</text>
+  <rect x="770" y="540" width="270" height="34" rx="17" fill="#10b981" opacity="0.15"/>
+  <text x="786" y="562" font-size="13" fill="#10b981">первый bootstrap ~30–90 с</text>
+</svg>

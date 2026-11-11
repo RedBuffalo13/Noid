@@ -20,8 +20,12 @@ def wrap(text, width):
     return lines
 
 
-def slide(num, tr, te, br, be, icon):
-    for lang, title, body in (("ru", tr, br), ("en", te, be)):
+TOTAL = 10
+
+
+def slide(num, tr, te, br, be, icon, accent_ru="", accent_en="", caption=""):
+    for lang, title, body, accent in (
+            ("ru", tr, br, accent_ru), ("en", te, be, accent_en)):
         t = wrap(title, 34 if lang == "ru" else 38)
         b = wrap(body, 62 if lang == "ru" else 68)
         svg = [
@@ -32,7 +36,8 @@ def slide(num, tr, te, br, be, icon):
             '<rect width="1280" height="720" fill="%s"/>' % BG,
             '<rect x="40" y="40" width="1200" height="640" rx="20" fill="%s"/>' % SURF,
             '<text x="120" y="90" font-family="Segoe UI,Arial" font-size="18" fill="%s">'
-            'Noid Messenger · %02d/10 · %s</text>' % (MUT, num, lang.upper()),
+            'Noid Messenger · %02d/%02d · %s · v0.2.0</text>'
+            % (MUT, num, TOTAL, lang.upper()),
             '<text x="1160" y="90" text-anchor="end" font-family="Segoe UI,Arial" '
             'font-size="18" fill="%s">noid</text>' % VIO,
         ]
@@ -45,9 +50,19 @@ def slide(num, tr, te, br, be, icon):
             svg.append(
                 '<text x="120" y="%d" font-family="Segoe UI,Arial" font-size="26" '
                 'fill="%s">%s</text>' % (by + i * 34, MUT, line))
+        ay = by + len(b) * 34 + 14
+        if accent:
+            svg.append(
+                '<text x="120" y="%d" font-family="Segoe UI,Arial" font-size="24" '
+                'fill="%s">%s</text>' % (ay, VIO, accent))
         svg.append('<circle cx="1020" cy="380" r="150" fill="none" '
                    'stroke="url(#g)" stroke-width="4"/>')
         svg.append(icon)
+        if caption:
+            svg.append(
+                '<text x="1020" y="600" text-anchor="middle" '
+                'font-family="Consolas,monospace" font-size="20" '
+                'fill="%s">%s</text>' % (MUT, caption))
         svg.append('<rect x="120" y="640" width="200" height="6" rx="3" fill="url(#g)"/>')
         svg.append('</svg>')
         (OUT / ("slide%02d_%s.svg" % (num, lang))).write_text(
@@ -81,24 +96,17 @@ ICONS = {
     7: ''.join('<rect x="%d" y="340" width="55" height="80" rx="8" fill="none" stroke="%s" '
                'stroke-width="4"/>' % (x, c)
                for x, c in [(930, VIO), (1010, GRN), (1090, VIO)]),
-    8: '<g transform="translate(925,300)"><rect width="24" height="24" rx="5" fill="none" '
-       'stroke="%s" stroke-width="4"/><path d="M5 12 l5 6 12 -14" fill="none" stroke="%s" '
-       'stroke-width="4" stroke-linecap="round"/></g>' % (GRN, GRN)
-       + '<rect x="965" y="307" width="150" height="10" rx="5" fill="%s" opacity="0.8"/>' % VIO
-       + '<g transform="translate(925,370)"><rect width="24" height="24" rx="5" fill="none" '
-       'stroke="%s" stroke-width="4"/><path d="M5 12 l5 6 12 -14" fill="none" stroke="%s" '
-       'stroke-width="4" stroke-linecap="round"/></g>' % (GRN, GRN)
-       + '<rect x="965" y="377" width="150" height="10" rx="5" fill="%s" opacity="0.8"/>' % VIO
-       + '<g transform="translate(925,440)"><rect width="24" height="24" rx="5" fill="none" '
-       'stroke="%s" stroke-width="4"/></g>' % MUT
-       + '<rect x="965" y="447" width="150" height="10" rx="5" fill="%s" opacity="0.35"/>' % VIO,
-    9: '<rect x="940" y="300" width="70" height="160" rx="8" fill="none" stroke="%s" '
+    8: '<rect x="940" y="300" width="70" height="160" rx="8" fill="none" stroke="%s" '
        'stroke-width="5"/><rect x="1030" y="300" width="70" height="160" rx="8" fill="none" '
        'stroke="%s" stroke-width="5"/>' % (VIO, GRN)
        + '<text x="957" y="390" font-family="Consolas,monospace" font-size="30" '
        'fill="%s">&gt;_</text>' % GRN
        + '<text x="1047" y="390" font-family="Consolas,monospace" font-size="30" '
        'fill="%s">{ }</text>' % VIO,
+    9: '<circle cx="1020" cy="380" r="105" fill="none" stroke="%s" stroke-width="3" '
+        'opacity="0.55"/><circle cx="1020" cy="380" r="60" fill="none" stroke="%s" '
+        'stroke-width="3" opacity="0.7"/><circle cx="1020" cy="380" r="18" '
+        'fill="%s"/>' % (VIO, GRN, TXT),
     10: '<circle cx="1020" cy="380" r="85" fill="none" stroke="url(#g)" stroke-width="7"/>'
         '<path d="M945 380 h40 l10 -25 14 50 10 -25 h40" fill="none" stroke="%s" '
         'stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>' % TXT,
@@ -139,16 +147,16 @@ S = [
     (7, "Один код — все платформы", "One codebase — all platforms",
      "Windows, Linux/VPS, Android: одно ядро Rust, одна криптография, один формат.",
      "Windows, Linux/VPS, Android: one Rust core, one crypto stack, one format."),
-    (8, "Промежуточно стабильно — октябрь 2026", "Interim stable — October 2026",
-     "Живая доставка Windows ↔ VPS: сессии, E2EE, история, outbox. "
-     "328 тестов. Дальше — Android.",
-     "Live Windows ↔ VPS delivery: sessions, E2EE, history, outbox. "
-     "328 tests. Android next."),
-    (9, "Открыт и проверяем", "Open and auditable",
+    (8, "Открыт и проверяем", "Open and auditable",
      "Rust + Svelte + Tauri. Тестируемая криптография, документированная "
      "модель угроз.",
      "Rust + Svelte + Tauri. Testable crypto, documented threat model — "
      "verify yourself."),
+    (9, "Onion внутри", "Onion inside",
+     "Встроенный Arti Tor — стабильная .onion-идентичность у каждого "
+     "узла, дозвоны по onion3, работа под DPI. Без демона и Orbot.",
+     "Embedded Arti Tor — every node gets a stable .onion identity, "
+     "dials peers over onion3, survives DPI. No daemon, no Orbot."),
     (10, "Сообщения, принадлежащие вам", "Messaging that belongs to you",
      "Noid — ваша переписка, ваши ключи, ваша сеть. "
      "Децентрализация как принцип.",
@@ -156,7 +164,14 @@ S = [
      "Decentralization as a principle."),
 ]
 
+EXTRAS = {
+    9: ("off · additional · tor_only — по согласию, fail-closed.",
+         "off · additional · tor_only — consent-gated, fail-closed.",
+         "….onion:4020"),
+}
+
 for n, tr, te, br, be in S:
-    slide(n, tr, te, br, be, ICONS[n])
+    ar, ae, cap = EXTRAS.get(n, ("", "", ""))
+    slide(n, tr, te, br, be, ICONS[n], ar, ae, cap)
 
 print("slides:", len(list(OUT.glob("slide*.svg"))))

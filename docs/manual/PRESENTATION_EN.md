@@ -9,8 +9,6 @@ Your messages exist only on your devices.
 
 ![Slide 1](slides/slide01_en.svg)
 
-server icon anywhere.
-
 ## Slide 2 — The problem
 Messengers today are post offices that read your letters.
 Central servers store plaintext, metadata, contacts — forever.
@@ -49,29 +47,23 @@ one file format. Headless nodes run on any VPS.
 
 ![Slide 7](slides/slide07_en.svg)
 
-## Slide 8 — Status: interim stable (Oct 2026)
-Windows ↔ VPS live delivery verified: sessions, encryption, persistence,
-outbox draining. 328 tests green. Android matrix is next.
-
-![Slide 8](slides/slide08_en.svg)
-
-## Slide 9 — Open & auditable
+## Slide 8 — Open & auditable
 Rust + Svelte + Tauri. Reproducible builds, testable crypto,
 documented threat model — read the code, verify yourself.
 
-![Slide 9](slides/slide09_en.svg)
+![Slide 8](slides/slide08_en.svg)
 
-## Slide 10 — Onion inside (v0.2.0)
+## Slide 9 — Onion inside (v0.2.0)
 Embedded Arti Tor in the same binary — every node gets a stable
 .onion identity, dials peers over onion3, keeps working under DPI.
 No daemon, no Orbot, no config. Off / additional / tor-only.
 
-![Slide 10](slides/slide10_en.svg)
+![Slide 9](slides/slide09_en.svg)
 
-## Slide 11 — The bottom line
+## Slide 10 — The bottom line
 Noid: messaging that belongs to you.
 
-![Slide 11](slides/slide11_en.svg)
+![Slide 10](slides/slide10_en.svg)
 
 ---
 *Palette: #0a0a0b background, #121214 surfaces, #8b5cf6 violet accent,

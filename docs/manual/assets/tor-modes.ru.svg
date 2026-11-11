@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="580" viewBox="0 0 1100 580" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+  <rect width="1100" height="580" fill="#0a0a0b" rx="16"/>
+  <text x="40" y="48" font-size="26" font-weight="700" fill="#e8e8ec">Режимы Tor — что видит наблюдатель</text>
+  <text x="40" y="76" font-size="14" fill="#9a9aa5">Содержимое всегда E2E-зашифровано на любом транспорте; меняются только метаданные.</text>
+
+  <rect x="60" y="110" width="300" height="380" rx="14" fill="#121216" stroke="#3a3a44" stroke-width="2"/>
+  <text x="90" y="152" font-size="22" font-weight="700" fill="#9a9aa5">off</text>
+  <text x="90" y="178" font-size="13" fill="#6b6b75">по умолчанию · самый быстрый</text>
+  <g font-size="13.5">
+    <text x="90" y="222" fill="#e8e8ec" font-weight="600">Видят контакты</text>
+    <text x="90" y="246" fill="#9a9aa5">PeerId + ваш публичный IP</text>
+    <text x="90" y="288" fill="#e8e8ec" font-weight="600">Видит ISP</text>
+    <text x="90" y="312" fill="#9a9aa5">IP↔IP, порты :4020/:4021</text>
+    <text x="90" y="354" fill="#e8e8ec" font-weight="600">Когда использовать</text>
+    <text x="90" y="378" fill="#9a9aa5">метаданные приемлемы,</text>
+    <text x="90" y="400" fill="#9a9aa5">важнее скорость</text>
+  </g>
+  <rect x="90" y="430" width="240" height="30" rx="15" fill="#3a3a44" opacity="0.6"/>
+  <text x="104" y="450" font-size="12" fill="#e8e8ec">прямые QUIC/TCP/WS слушатели</text>
+
+  <rect x="400" y="110" width="300" height="380" rx="14" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="430" y="152" font-size="22" font-weight="700" fill="#8b5cf6">additional</text>
+  <text x="430" y="178" font-size="13" fill="#6b6b75">баланс скорость + приватность</text>
+  <g font-size="13.5">
+    <text x="430" y="222" fill="#e8e8ec" font-weight="600">Видят контакты</text>
+    <text x="430" y="246" fill="#9a9aa5">PeerId + IP (+ .onion в инвайтах)</text>
+    <text x="430" y="288" fill="#e8e8ec" font-weight="600">Видит ISP</text>
+    <text x="430" y="312" fill="#9a9aa5">IP↔IP + «общается с Tor»</text>
+    <text x="430" y="354" fill="#e8e8ec" font-weight="600">Когда использовать</text>
+    <text x="430" y="378" fill="#9a9aa5">нужна onion-доступность для</text>
+    <text x="430" y="400" fill="#9a9aa5">NAT-пиров + быстрый direct</text>
+  </g>
+  <rect x="430" y="430" width="240" height="30" rx="15" fill="#8b5cf6" opacity="0.18"/>
+  <text x="444" y="450" font-size="12" fill="#8b5cf6">публикуется свой .onion сервис</text>
+
+  <rect x="740" y="110" width="300" height="380" rx="14" fill="#121216" stroke="#10b981" stroke-width="2"/>
+  <text x="770" y="152" font-size="22" font-weight="700" fill="#10b981">tor_only</text>
+  <text x="770" y="178" font-size="13" fill="#6b6b75">макс. приватность · fail-closed</text>
+  <g font-size="13.5">
+    <text x="770" y="222" fill="#e8e8ec" font-weight="600">Видят контакты</text>
+    <text x="770" y="246" fill="#10b981">PeerId + только .onion</text>
+    <text x="770" y="288" fill="#e8e8ec" font-weight="600">Видит ISP</text>
+    <text x="770" y="312" fill="#10b981">«общается с Tor» — всё</text>
+    <text x="770" y="354" fill="#e8e8ec" font-weight="600">Когда использовать</text>
+    <text x="770" y="378" fill="#9a9aa5">IP не должен попадать</text>
+    <text x="770" y="400" fill="#9a9aa5">в протокол вообще</text>
+  </g>
+  <rect x="770" y="430" width="240" height="30" rx="15" fill="#10b981" opacity="0.18"/>
+  <text x="784" y="450" font-size="12" fill="#10b981">прямые слушатели не создаются</text>
+
+  <text x="60" y="530" font-size="13" fill="#6b6b75">Режим и согласие персистятся между запусками · релеи видят метаданные (PeerId, тайминг, объём), но не текст · паддинга трафика пока нет</text>
+  <rect x="60" y="546" width="980" height="2" fill="url(#acc)" opacity="0.4"/>
+</svg>

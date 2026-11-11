@@ -7,7 +7,7 @@
 | ОС | Windows 10+, Linux (glibc 2.31+), Android 10+ | Windows 11, Debian 12/Ubuntu 24.04, Android 12+ |
 | ОЗУ | 1 ГБ | 2 ГБ |
 | Диск | 200 МБ | 500 МБ |
-| Инструменты | Rust stable, Node 20+, Tauri CLI | последний stable-тулчейн |
+| Инструменты | Rust stable, Node 24+, Tauri CLI | последний stable-тулчейн |
 
 ## Десктоп — из исходников
 

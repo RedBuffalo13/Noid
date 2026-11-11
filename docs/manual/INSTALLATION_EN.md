@@ -7,7 +7,7 @@
 | OS | Windows 10+, Linux (glibc 2.31+), Android 10+ | Windows 11, Debian 12/Ubuntu 24.04, Android 12+ |
 | RAM | 1 GB | 2 GB |
 | Disk | 200 MB | 500 MB |
-| Build tools | Rust stable, Node 20+, Tauri CLI | latest stable toolchain |
+| Build tools | Rust stable, Node 24+, Tauri CLI | latest stable toolchain |
 
 ## Desktop — from source
 

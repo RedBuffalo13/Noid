@@ -1,40 +1,94 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="560" viewBox="0 0 1100 560" font-family="Segoe UI, Arial, sans-serif">
-  <rect width="1100" height="560" fill="#0a0a0b" rx="16"/>
-  <text x="40" y="48" font-size="26" font-weight="700" fill="#e8e8ec">Noid — one binary, every role</text>
-  <g stroke="#3a3a44" stroke-width="2">
-    <line x1="200" y1="280" x2="550" y2="130"/>
-    <line x1="200" y1="280" x2="550" y2="430"/>
-    <line x1="900" y1="280" x2="550" y2="130"/>
-    <line x1="900" y1="280" x2="550" y2="430"/>
-  </g>
-  <g stroke="#8b5cf6" stroke-width="2" fill="none" stroke-dasharray="6 5">
-    <path d="M550 130 C 700 90, 750 90, 900 240" />
-    <path d="M200 280 C 330 340, 400 380, 550 430" />
-  </g>
-  <g>
-    <rect x="80" y="210" width="240" height="140" rx="14" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
-    <text x="105" y="250" font-size="20" font-weight="700" fill="#e8e8ec">Windows client</text>
-    <text x="105" y="282" font-size="14" fill="#9a9aa5">GUI + libp2p node</text>
-    <text x="105" y="306" font-size="14" fill="#9a9aa5">SQLite (AES-256-GCM)</text>
-    <text x="105" y="330" font-size="14" fill="#9a9aa5">PIN + KillPin · embedded Tor</text>
-    <rect x="430" y="60" width="240" height="140" rx="14" fill="#121216" stroke="#10b981" stroke-width="2"/>
-    <text x="455" y="100" font-size="20" font-weight="700" fill="#e8e8ec">Android client</text>
-    <text x="455" y="132" font-size="14" fill="#9a9aa5">Same Rust core (JNI)</text>
-    <text x="455" y="156" font-size="14" fill="#9a9aa5">FGS + WorkManager · embedded Tor</text>
-    <rect x="430" y="360" width="240" height="140" rx="14" fill="#121216" stroke="#10b981" stroke-width="2"/>
-    <text x="455" y="400" font-size="20" font-weight="700" fill="#e8e8ec">VPS / Linux node</text>
-    <text x="455" y="432" font-size="14" fill="#9a9aa5">relay + mailbox + DHT</text>
-    <text x="455" y="456" font-size="14" fill="#9a9aa5">kad Server + onion relay</text>
-    <rect x="780" y="210" width="240" height="140" rx="14" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
-    <text x="805" y="250" font-size="20" font-weight="700" fill="#e8e8ec">Any Noid peer</text>
-    <text x="805" y="282" font-size="14" fill="#9a9aa5">Every node can relay</text>
-    <text x="805" y="306" font-size="14" fill="#9a9aa5">and store mailboxes</text>
-    <rect x="470" y="215" width="160" height="130" rx="70" fill="#17171f" stroke="url(#g)" stroke-width="3"/>
-    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs>
-    <text x="497" y="272" font-size="16" fill="#e8e8ec">Kademlia</text>
-    <text x="502" y="294" font-size="16" fill="#e8e8ec">DHT</text>
-    <text x="490" y="316" font-size="12" fill="#9a9aa5">usernames · prekeys · mailbox</text>
-  </g>
-  <text x="40" y="530" font-size="14" fill="#6b6b75">Transports: QUIC · TCP · WebSocket · /onion3 (embedded Arti, v0.2.0) — fallback: /p2p-circuit relay paths (dashed).</text>
-  <text x="40" y="550" font-size="12" fill="#8b5cf6">Tor modes: off · additional · tor_only — consent-gated, persisted, fail-closed in tor_only.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="660" viewBox="0 0 1100 660" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#10b981"/></marker>
+  </defs>
+  <rect width="1100" height="660" fill="#0a0a0b" rx="16"/>
+  <text x="40" y="46" font-size="26" font-weight="700" fill="#e8e8ec">Noid — one binary, every role (v0.2.0)</text>
+  <text x="40" y="72" font-size="14" fill="#9a9aa5">Same Rust core on every platform · no separate relay service anywhere</text>
+
+  <!-- ============ LEFT: app surfaces ============ -->
+  <text x="80" y="112" font-size="14" font-weight="700" fill="#8b5cf6" letter-spacing="1">APP SURFACES</text>
+  <rect x="60" y="126" width="230" height="86" rx="12" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="80" y="154" font-size="16" font-weight="700" fill="#e8e8ec">Windows / Linux GUI</text>
+  <text x="80" y="178" font-size="12.5" fill="#9a9aa5">Svelte 5 + Tauri 2</text>
+  <text x="80" y="198" font-size="12.5" fill="#9a9aa5">single-instance lock</text>
+
+  <rect x="60" y="226" width="230" height="86" rx="12" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="80" y="254" font-size="16" font-weight="700" fill="#e8e8ec">Android</text>
+  <text x="80" y="278" font-size="12.5" fill="#9a9aa5">same core via JNI</text>
+  <text x="80" y="298" font-size="12.5" fill="#9a9aa5">allowBackup=false</text>
+
+  <rect x="60" y="326" width="230" height="86" rx="12" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="80" y="354" font-size="16" font-weight="700" fill="#e8e8ec">VPS headless</text>
+  <text x="80" y="378" font-size="12.5" fill="#9a9aa5">relay + mailbox + DHT seed</text>
+  <text x="80" y="398" font-size="12.5" fill="#9a9aa5">instance lock · relay.pass 0600</text>
+
+  <!-- ============ CENTER: the binary ============ -->
+  <rect x="330" y="100" width="440" height="470" rx="18" fill="#121216" stroke="url(#g)" stroke-width="3"/>
+  <text x="360" y="134" font-size="15" font-weight="700" fill="#e8e8ec" letter-spacing="1">ONE BINARY — INTERNAL LAYERS</text>
+
+  <!-- UI/commands -->
+  <rect x="355" y="150" width="390" height="62" rx="10" fill="#17171f" stroke="#3a3a44"/>
+  <text x="372" y="176" font-size="14" font-weight="600" fill="#e8e8ec">Tauri commands → chat/room/file/contact flows</text>
+  <text x="372" y="198" font-size="12" fill="#9a9aa5">validated inputs · event streams to UI</text>
+
+  <!-- Security -->
+  <rect x="355" y="224" width="390" height="86" rx="10" fill="#17171f" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="372" y="250" font-size="14" font-weight="600" fill="#e8e8ec">Security core</text>
+  <text x="372" y="272" font-size="12" fill="#9a9aa5">Argon2id PIN → AES-256-GCM fields · KillPIN wipe</text>
+  <text x="372" y="292" font-size="12" fill="#9a9aa5">X3DH + Double Ratchet · send-guard · zeroize</text>
+
+  <!-- P2P engine -->
+  <rect x="355" y="322" width="390" height="100" rx="10" fill="#17171f" stroke="#10b981" stroke-width="1.5"/>
+  <text x="372" y="348" font-size="14" font-weight="600" fill="#e8e8ec">libp2p engine — event loop</text>
+  <text x="372" y="370" font-size="12" fill="#9a9aa5">Kademlia DHT · gossipsub · request-response</text>
+  <text x="372" y="390" font-size="12" fill="#9a9aa5">relay client+server · mailbox protocol · dedup</text>
+  <text x="372" y="410" font-size="12" fill="#9a9aa5">pending → ACK: direct · mailbox · failed</text>
+
+  <!-- Tor -->
+  <rect x="355" y="434" width="390" height="56" rx="10" fill="#17171f" stroke="#8b5cf6" stroke-width="1.5"/>
+  <text x="372" y="458" font-size="14" font-weight="600" fill="#e8e8ec">Embedded Tor — Arti 0.48 supervisor</text>
+  <text x="372" y="480" font-size="12" fill="#9a9aa5">off · additional · tor_only (fail-closed) · consent-gated</text>
+
+  <!-- Storage -->
+  <rect x="355" y="502" width="390" height="56" rx="10" fill="#17171f" stroke="#3a3a44"/>
+  <text x="372" y="526" font-size="14" font-weight="600" fill="#e8e8ec">SQLite (sqlx, WAL) — migrations 001–020</text>
+  <text x="372" y="548" font-size="12" fill="#9a9aa5">messages · ratchet states · unread · room-control seen</text>
+
+  <!-- arrows surfaces -> binary -->
+  <line x1="290" y1="169" x2="330" y2="181" stroke="#10b981" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="290" y1="269" x2="330" y2="300" stroke="#10b981" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="290" y1="369" x2="330" y2="420" stroke="#10b981" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ============ RIGHT: transports ============ -->
+  <text x="830" y="112" font-size="14" font-weight="700" fill="#10b981" letter-spacing="1">TRANSPORTS</text>
+  <rect x="810" y="126" width="240" height="70" rx="12" fill="#121216" stroke="#10b981" stroke-width="2"/>
+  <text x="830" y="152" font-size="15" font-weight="700" fill="#e8e8ec">Direct</text>
+  <text x="830" y="176" font-size="12.5" fill="#9a9aa5">QUIC/TCP :4020 · WS :4021</text>
+
+  <rect x="810" y="210" width="240" height="70" rx="12" fill="#121216" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="830" y="236" font-size="15" font-weight="700" fill="#e8e8ec">Onion /onion3/</text>
+  <text x="830" y="260" font-size="12.5" fill="#9a9aa5">hidden service per node</text>
+
+  <rect x="810" y="294" width="240" height="70" rx="12" fill="#121216" stroke="#10b981" stroke-width="2"/>
+  <text x="830" y="320" font-size="15" font-weight="700" fill="#e8e8ec">/p2p-circuit relay</text>
+  <text x="830" y="344" font-size="12.5" fill="#9a9aa5">NAT traversal fallback</text>
+
+  <rect x="810" y="378" width="240" height="86" rx="12" fill="#121216" stroke="#3a3a44" stroke-width="2"/>
+  <text x="830" y="404" font-size="15" font-weight="700" fill="#e8e8ec">NAT toolbox</text>
+  <text x="830" y="426" font-size="12.5" fill="#9a9aa5">STUN · AutoNAT · DCUTR</text>
+  <text x="830" y="446" font-size="12.5" fill="#9a9aa5">UPnP · mDNS</text>
+
+  <line x1="770" y1="181" x2="810" y2="161" stroke="#10b981" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="770" y1="260" x2="810" y2="245" stroke="#8b5cf6" stroke-width="2" marker-end="url(#arr)"/>
+  <line x1="770" y1="340" x2="810" y2="329" stroke="#10b981" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- bottom: peer cloud -->
+  <ellipse cx="550" cy="615" rx="330" ry="34" fill="#17171f" stroke="url(#g)" stroke-width="2"/>
+  <text x="400" y="621" font-size="14" fill="#e8e8ec">every peer is the same binary — relay, mailbox, DHT</text>
+
+  <line x1="550" y1="570" x2="550" y2="582" stroke="#10b981" stroke-width="2.5" marker-end="url(#arr)"/>
 </svg>

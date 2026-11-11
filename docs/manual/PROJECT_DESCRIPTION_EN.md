@@ -46,18 +46,84 @@ flowchart LR
   B -. offline mailbox .-> C
 ```
 
-```mermaid
-sequenceDiagram
-  participant S as Sender
-  participant D as DHT / direct fetch
-  participant R as Receiver
-  S->>D: fetch signed PrekeyBundle (direct request + DHT race)
-  D-->>S: verified bundle
-  S->>R: X3DHInit (signed by Noise identity)
-  R->>R: install Double Ratchet, persist session
-  S->>R: RatchetChat (E2EE)
-  R->>R: decrypt → persist → ack → delete from outbox
+## Quick-start cases
+
+### 1. Two phones, cellular networks — onion mode
+
+![onion mobile](assets/case-onion-mobile.svg)
+
+The hardest case: both peers behind carrier NAT, no public address,
+APKs sideloaded. Direct dialing is impossible — and nothing needs to be
+configured.
+
+1. Install the APK on both devices → set TruePIN.
+2. Settings → Tor → `additional` (or `tor_only` for maximum privacy) →
+   accept the consent → wait for *Tor ready* (~30–90 s first time).
+3. Exchange invite strings (messenger of choice, QR, NFC — the channel
+   doesn't matter): the invite now carries the `/onion3/…` endpoint.
+4. Chat. Messages ride 3-hop onion circuits; neither peer ever sees the
+   other's IP. Offline envelopes park on mailbox nodes encrypted.
+
+Tor DPI-blocking carrier? Switch to a non-filtering network or run an
+external VPN — bridge transports are planned but not in v0.2.0. Plain
+P2P mode still works if at least one side is reachable.
+
+### 2. VPS as a permanent relay
+
+![permanent relay](assets/case-permanent-relay.svg)
+
+A cheap VPS makes the whole mesh reliable: it's a stable bootstrap
+seed, a `/p2p-circuit` relay for NAT'd peers and a mailbox for offline
+delivery — in one process.
+
+```bash
+scp noid-linux-x86_64 root@<vps>:/opt/noid/noid
+ssh root@<vps>
+chmod +x /opt/noid/noid && ufw allow 4020/tcp && ufw allow 4021/tcp && ufw allow 4020/udp
+nohup /opt/noid/noid > /opt/noid/noid.log 2>&1 &
+# first run generates relay identity + passphrase (0600) under ~/.config/noid-relay/
 ```
+
+Point clients at it: add its address (`noid:<peerId>@/ip4/<vps>/tcp/4020/p2p/<id>`)
+to `bootstrap_nodes.json` or simply exchange invites — after the first
+circuit reservation, NAT'd peers become dialable through it.
+
+### 3. Home PC behind NAT as the permanent node
+
+No VPS? A home machine works too:
+
+1. Run Noid (desktop or headless binary) — it's always-on anyway.
+2. Forward ports **4020/tcp+udp** and **4021/tcp** on the router to that
+   machine; reserve a static LAN IP for it.
+3. The node auto-detects reachability (AutoNAT) and starts relaying;
+   with a dynamic DNS name your friends get a permanent entry point.
+
+Even without forwarding, the node still serves contacts through
+outbound connections — forwarding just makes it a *public* relay.
+
+### 4. Friends-only private mesh
+
+![private mesh and LAN](assets/case-mesh-lan.svg)
+
+You can run a small mesh entirely inside your group:
+
+- Every node is a potential relay/mailbox — pick 2–3 stable ones (VPS
+  or always-on home PCs) and put them in `bootstrap_nodes.json`.
+- Privacy mode `relayed_only` hides every member's IP from the others'
+  contacts — only your own relays see them.
+- Add `tor_only` on top and even the relays disappear as observers.
+
+### 5. Maximum-privacy pair (tor_only both ways)
+
+Both sides set `tor_only`: no direct listeners are created, no IP ever
+enters the protocol — only `.onion` addresses. Slower, but the only
+network-visible fact is "this device talks to Tor".
+
+### 6. LAN / air-gapped room
+
+mDNS discovers peers on the local network automatically — no internet,
+no bootstrap, no accounts. Useful for a building, an office, or an
+isolated site network.
 
 ## Embedded Tor (v0.2.0)
 
@@ -69,50 +135,57 @@ the same binary — no external tor daemon, no Orbot, no proxy settings.
   `tor-keystore`); survives reinstalls, created offline at PIN login —
   no socket is opened before consent.
 - **Modes** (`Settings → Tor`, persisted in `tor_config.json`):
-  `off` (default — ordinary networking), `additional` (onion alongside
-  direct transports), `tor_only` (onion-only, fail-closed — direct
-  listeners are not created at all).
+  `off` (default), `additional` (onion alongside direct transports),
+  `tor_only` (onion-only, fail-closed — direct listeners are not
+  created at all).
 - **Transport**: `/onion3/` multiaddr dialed/listened through the
   embedded client; Noise + Yamux multiplexing on top — the same
   authenticated stream as every other transport.
 - **Invites**: `get_my_invite` appends the `/onion3/…:4020/p2p/<id>`
-  endpoint automatically when the service is live; receivers dial every
-  listed address — libp2p deduplicates by PeerId.
+  endpoint automatically when the service is live.
 - **Relay**: onion-relay opt-in is a separate switch + separate
   metered-traffic consent on Android; `/p2p-circuit` reservations can
   ride on onion transports.
 - **Supervision**: generation-owned client/service with bounded
-  shutdown, deduplicated rebuilds, `tor-status` event stream to the UI;
-  vendored arti-client patch turns the protocol-fatal `exit(1)` into a
-  dormant failure the supervisor can tear down.
+  shutdown, deduplicated rebuilds, `tor-status` event stream to the UI.
 - **Limitation**: on networks with Tor DPI filtering the client needs
   an external VPN or bridges (pluggable transports — planned).
 
-## Current state — interim stable (`noid_stable_2610`, 2026-10-27)
+## What an observer can see
 
-Verified live on updated Windows ↔ VPS builds:
+![tor modes](assets/tor-modes.svg)
 
-- Ratchet sessions restore and persist (`ratchet_states` = 1 each side).
-- 3 new bidirectional messages carried identical stable IDs in both
-  databases, decrypted on receipt, left the sender outbox.
-- Both history endpoints repeatedly return 16 rows; no new
-  `No prekey bundle found` entries in fresh logs.
-- WAN signed-prekey probe passed in 0.73 s (temporary identity).
-- Test suite: 324 unit + 4 integration tests green; 3 WAN probes opt-in.
+Message **content** is always E2E-encrypted on every transport. What
+differs is the metadata.
 
-Fixes in this build:
+| Who sees | `off` | `additional` | `tor_only` |
+|----------|-------|--------------|------------|
+| Contacts | PeerId + your public IP | PeerId + IP (+ `.onion` if invited that way) | PeerId + `.onion` only — **IP never enters the protocol** |
+| Relay nodes | Circuit: source↔dest PeerIds + volumes | Same, or onion-bound circuits | Same, no source IP |
+| Mailbox node | Ciphertext envelopes + whose mailbox + timing | Same | Same, no sender IP |
+| ISP / DPI | IP ↔ IP, fingerprintable ports :4020/:4021 | Same + "talks to Tor" | "Talks to Tor" — nothing else |
 
-- X3DH initiator DB self-deadlock → short-lived Database snapshot.
-- Prekey fetch depended solely on DHT → direct request-response path
-  races with DHT; dedup window prevents double session initiation.
-- Transient bootstrap failures dead-marked seeds for 30 min → pinned and
-  blind seeds now recover with a 60 s retry cap and address-book restore.
-- Exact signed DHT record retries were refused as stale → idempotent
-  verified retries (metadata untouched, forgeries still rejected).
+Residual risks on every transport: stable PeerId/onion pseudonymity,
+envelope-size timing — there is no traffic padding yet.
 
-Residual debt: Android rebuild/live matrix pending; long offline soak
-not performed; two pre-control-test outbox rows remain queued on
-Windows. Full report: `docs/audit2510/12_prekey_recovery_followup.md`.
+## Current state — v0.2.0 (audit remediation rebuild, 2026-11-11)
+
+- Ratchet send-guard prevents encrypting before first inbound DH;
+  codec offset fix; deterministic X3DH glare resolution.
+- Durable pending → delivered/mailbox ACK states; honest
+  sending/sent/queued/delivered/failed statuses.
+- Wipe ordering hardened: gate/epoch revoke → Tor identity drop →
+  task drain → inbox clear → DB close.
+- Room-control replay dedup (migration 019), durable unread counts
+  (migration 020), file-transfer ACKs + inbox quotas.
+- Instance lock on GUI and headless; Android `allowBackup=false` +
+  data-extraction rules verified on a physical device.
+- Verified: `cargo check` clean, 358/358 lib tests, svelte-check 0/0,
+  166 vitest + 7 deepmerge tests; Linux headless relay smoke OK;
+  Android install + launch on a real device OK.
+
+Residual debt: live-Tor/WAN matrix and macOS builds not yet performed;
+large-file decomposition is planned work.
 
 ## What it is not
 

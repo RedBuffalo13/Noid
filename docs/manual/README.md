@@ -20,6 +20,6 @@ mailbox. No central server stores messages — ever.
 сквозным шифрованием: один бинарник — это чат-клиент, узел DHT, релей и
 офлайн-почтовый ящик. Ни один центральный сервер не хранит сообщения.
 
-Current state: **interim stable** (snapshot `noid_stable_2610`,
-2026-10-27) — verified bidirectional Windows ↔ Linux/VPS delivery with
-persisted E2EE history. Details: see the project description.
+Current state: **v0.2.0** (audit remediation rebuild, 2026-11-11) —
+embedded Tor, durable delivery ACKs, hardened wipe. Details and
+quick-start cases: see the project description.
