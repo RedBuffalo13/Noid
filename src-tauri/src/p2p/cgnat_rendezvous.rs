@@ -27,14 +27,21 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 /// Public BitTorrent Mainline DHT bootstrap nodes (IP literals — work even
-/// when Android DNS wrapper is bypassed).
-/// - `router.bittorrent.com:6881`  -> `67.215.246.10:6881`
-/// - `dht.transmissionbt.com:6881` -> `87.98.162.88:6881`
-/// - `router.utorrent.com:6881`    -> `82.221.103.244:6881`
+/// when Android DNS wrapper is bypassed). Live-probed 2026-11-12: three of
+/// the original six were dead/relocated, so the list carries DNS alternates
+/// (`dht.transmissionbt.com` second A record, `dht.libtorrent.org`).
+/// - `router.bittorrent.com`   -> `67.215.246.10:6881`
+/// - `dht.transmissionbt.com`  -> `87.98.162.88:6881`, `212.129.33.59:6881`
+/// - `router.utorrent.com`     -> `82.221.103.244:6881`
+/// - `dht.libtorrent.org`      -> `185.157.221.247:25401`
+/// - `router.magnets.im`       -> `86.105.4.36:6881`
 pub const MAINLINE_DHT_NODES: &[SocketAddr] = &[
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(67, 215, 246, 10)), 6881),
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(87, 98, 162, 88)), 6881),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(212, 129, 33, 59)), 6881),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(185, 157, 221, 247)), 25401),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(67, 215, 246, 10)), 6881),
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(82, 221, 103, 244)), 6881),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(86, 105, 4, 36)), 6881),
 ];
 
 /// Compute the 20-byte rendezvous `info_hash` for a target `peer_id`.
@@ -45,6 +52,41 @@ pub fn rendezvous_info_hash(peer_id: &str) -> [u8; 20] {
     let digest = h.finalize();
     let mut out = [0u8; 20];
     out.copy_from_slice(&digest[..20]);
+    out
+}
+
+/// Persistent daily rendezvous slot for a contact (rv v2): derived from
+/// the contact's exchanged X25519 public key, so a peer can be re-found
+/// after restarts and CGNAT re-mapping WITHOUT a fresh invite. The slot
+/// reveals nothing to parties who do not already hold the public key —
+/// the public PeerId still never names a slot (SEC-1111-03), and the
+/// daily rotation bounds the observability window.
+pub fn daily_slot_label(public_key: &[u8; 32]) -> String {
+    let mut h = Sha256::new();
+    h.update(b"noid:rvseed:v2:");
+    h.update(public_key);
+    let seed = h.finalize();
+    let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    format!("contact-rv2:{}:{}", to_hex(&seed[..16]), day)
+}
+
+/// Our own daily inbound slot — contacts announce at the slot derived
+/// from OUR dht public key, so one label serves every contact.
+pub fn own_daily_slot_label(public_key: &[u8; 32]) -> String {
+    daily_slot_label(public_key)
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// XOR distance key between a Mainline node id and the rendezvous
+/// info_hash — Kademlia's metric for iterative closest-node walks.
+fn xor_key(node_id: &[u8; 20], info_hash: &[u8; 20]) -> [u8; 20] {
+    let mut out = [0u8; 20];
+    for i in 0..20 {
+        out[i] = node_id[i] ^ info_hash[i];
+    }
     out
 }
 
@@ -84,9 +126,17 @@ pub fn build_announce_peer_query(
     pkt
 }
 
+/// Compact Mainline node entry: `(node_id, socket_addr)` — the id is
+/// needed to sort candidates by XOR distance during the iterative walk.
+pub type DhtNode = ([u8; 20], SocketAddr);
+
 /// Extract compact IPv4 `SocketAddr` entries (`6:xxxxxx` inside `6:valuesl...e`)
-/// and optional `token` / `nodes` from a bencoded `get_peers` KRPC response.
-pub fn parse_get_peers_response(buf: &[u8]) -> (Vec<SocketAddr>, Option<Vec<u8>>, Vec<SocketAddr>) {
+/// and optional `token` / `nodes` (26-byte `id+ip+port`, ids kept — the
+/// iterative walk sorts them by XOR distance to the info_hash) from a
+/// bencoded `get_peers` KRPC response.
+pub fn parse_get_peers_response(
+    buf: &[u8],
+) -> (Vec<SocketAddr>, Option<Vec<u8>>, Vec<DhtNode>) {
     let mut peers = Vec::new();
     let mut nodes = Vec::new();
     let token = extract_bencode_bytes(buf, b"5:token");
@@ -118,7 +168,9 @@ pub fn parse_get_peers_response(buf: &[u8]) -> (Vec<SocketAddr>, Option<Vec<u8>>
             let ip = Ipv4Addr::new(chunk[20], chunk[21], chunk[22], chunk[23]);
             let port = u16::from_be_bytes([chunk[24], chunk[25]]);
             if !ip.is_unspecified() && !ip.is_private() && port != 0 {
-                nodes.push(SocketAddr::new(IpAddr::V4(ip), port));
+                let mut id = [0u8; 20];
+                id.copy_from_slice(&chunk[..20]);
+                nodes.push((id, SocketAddr::new(IpAddr::V4(ip), port)));
             }
         }
     }
@@ -146,7 +198,7 @@ fn extract_bencode_bytes(buf: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 /// `target_peer_id` and return any peer `SocketAddr`s already waiting in that slot.
 pub fn announce_and_poll_rendezvous(
     target_peer_id: &str,
-    my_peer_id: &str,
+    _my_peer_id: &str,
     my_external_port: u16,
 ) -> Vec<SocketAddr> {
     // `my_external_port == 0` = poll-only mode (a seed node watching its own
@@ -161,38 +213,90 @@ pub fn announce_and_poll_rendezvous(
     let _ = sock.set_write_timeout(Some(Duration::from_millis(150)));
 
     let info_hash = rendezvous_info_hash(target_peer_id);
-    let my_node_id = rendezvous_info_hash(my_peer_id);
-    let q = build_get_peers_query(b"rv", &my_node_id, &info_hash);
+    // SEC-1111-04: fresh CSPRNG KRPC node id + transaction id per poll —
+    // deriving node_id from our PeerId linked every Mainline-DHT query to
+    // our noid identity, and the static b"rv" tx id was a protocol tag.
+    let my_node_id: [u8; 20] = rand::random();
+    let tx_id: [u8; 2] = rand::random();
+    let q = build_get_peers_query(&tx_id, &my_node_id, &info_hash);
 
+    // Iterative Kademlia-style walk: seed from the bootstrap list, then
+    // re-query the nodes each response claims are XOR-closest to the
+    // info_hash. A one-shot bootstrap query almost never lands on the
+    // nodes that actually hold the slot — BEP-5 converges announce and
+    // lookup only through this walk (bounded to ~2.5s total).
+    let mut queried: std::collections::HashSet<SocketAddr> =
+        std::collections::HashSet::new();
     for boot in MAINLINE_DHT_NODES {
-        let _ = sock.send_to(&q, boot);
+        if queried.insert(*boot) {
+            let _ = sock.send_to(&q, boot);
+        }
     }
 
-    let mut discovered_peers = Vec::new();
-    let mut second_hop = Vec::new();
+    let mut discovered_peers: Vec<SocketAddr> = Vec::new();
+    let mut candidates: Vec<([u8; 20], SocketAddr)> = Vec::new();
+    let mut tokens: std::collections::HashMap<SocketAddr, Vec<u8>> =
+        std::collections::HashMap::new();
     let mut buf = [0u8; 1500];
+    let deadline = std::time::Instant::now() + Duration::from_millis(2500);
 
-    for _ in 0..6 {
-        let Ok((n, from)) = sock.recv_from(&mut buf) else {
+    for round in 0..5 {
+        // Drain replies until the socket idles, then (rounds 0..4) extend
+        // the walk toward XOR-closest unqueried nodes.
+        while let Ok((n, from)) = sock.recv_from(&mut buf) {
+            let (peers, token, closer_nodes) = parse_get_peers_response(&buf[..n]);
+            for p in peers {
+                if !discovered_peers.contains(&p) {
+                    discovered_peers.push(p);
+                }
+            }
+            if let Some(tok) = token {
+                tokens.insert(from, tok);
+            }
+            for (nid, sa) in closer_nodes {
+                if !queried.contains(&sa)
+                    && !candidates.iter().any(|(_, a)| *a == sa)
+                {
+                    candidates.push((nid, sa));
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
             break;
-        };
-        let (peers, token, closer_nodes) = parse_get_peers_response(&buf[..n]);
-        for p in peers {
-            if !discovered_peers.contains(&p) {
-                discovered_peers.push(p);
+        }
+        if round < 4 {
+            candidates.sort_by(|a, b| {
+                xor_key(&a.0, &info_hash).cmp(&xor_key(&b.0, &info_hash))
+            });
+            let mut picked = 0usize;
+            for (_, sa) in candidates.iter() {
+                if picked >= 8 {
+                    break;
+                }
+                if queried.insert(*sa) {
+                    let _ = sock.send_to(&q, sa);
+                    picked += 1;
+                }
+            }
+            if picked == 0 {
+                break;
             }
         }
-        if let Some(tok) = token {
-            if my_external_port != 0 {
-                let ann = build_announce_peer_query(b"ra", &my_node_id, &info_hash, my_external_port, &tok);
-                let _ = sock.send_to(&ann, from);
-            }
-        }
-        for cn in closer_nodes.into_iter().take(4) {
-            if second_hop.len() < 8 && !second_hop.contains(&cn) {
-                let _ = sock.send_to(&q, cn);
-                second_hop.push(cn);
-            }
+    }
+
+    // Announce our external port to every node that issued a token —
+    // the walk sorted them closest-first, so publication lands on (or
+    // near) the slot's actual keepers.
+    if my_external_port != 0 {
+        for (sa, tok) in &tokens {
+            let ann = build_announce_peer_query(
+                &rand::random(),
+                &my_node_id,
+                &info_hash,
+                my_external_port,
+                tok,
+            );
+            let _ = sock.send_to(&ann, sa);
         }
     }
     discovered_peers
@@ -213,5 +317,40 @@ mod tests {
         let (peers, token, _) = parse_get_peers_response(&resp);
         assert_eq!(token.as_deref(), Some(b"tok1".as_slice()));
         assert_eq!(peers, vec!["85.140.1.2:4020".parse().unwrap()]);
+    }
+
+    #[test]
+    fn daily_slot_label_is_deterministic_and_key_bound() {
+        let k1 = [7u8; 32];
+        let k2 = [8u8; 32];
+        assert_eq!(daily_slot_label(&k1), daily_slot_label(&k1));
+        assert_ne!(daily_slot_label(&k1), daily_slot_label(&k2));
+        assert!(daily_slot_label(&k1).starts_with("contact-rv2:"));
+    }
+
+    #[test]
+    fn xor_key_orders_by_distance() {
+        let target = [0u8; 20];
+        let near = [0u8; 20];
+        let mut far = [0u8; 20];
+        far[0] = 0x80;
+        assert!(xor_key(&near, &target) < xor_key(&far, &target));
+    }
+
+    #[test]
+    fn parses_compact_nodes_with_ids() {
+        // nodes = one 26-byte entry: id=0xAA*20, ip=85.140.1.2, port=0x1FB5 (4021)
+        let mut nodes26 = Vec::new();
+        nodes26.extend_from_slice(&[0xAAu8; 20]);
+        nodes26.extend_from_slice(&[85, 140, 1, 2, 0x0F, 0xB5]);
+        let mut resp = Vec::new();
+        resp.extend_from_slice(b"d1:rd5:nodes26:");
+        resp.extend_from_slice(&nodes26);
+        resp.extend_from_slice(b"e1:t2:rv1:y1:re");
+
+        let (_, _, nodes) = parse_get_peers_response(&resp);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].0, [0xAAu8; 20]);
+        assert_eq!(nodes[0].1, "85.140.1.2:4021".parse().unwrap());
     }
 }

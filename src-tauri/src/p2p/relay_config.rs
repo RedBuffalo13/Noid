@@ -53,6 +53,10 @@ pub struct RelayConfig {
     pub max_circuits_per_peer: usize,
     pub max_circuit_duration_secs: u64,
     pub max_circuit_bytes: u64,
+    /// META-05: pinned 2-hop relay chain `[entry, exit]` — when non-empty,
+    /// outbound `/noid` requests are wrapped in `HopRequest` nesting and
+    /// sent to the entry relay. Empty = single-hop/direct behaviour.
+    pub hop_relays: Vec<String>,
 }
 
 impl Default for RelayConfig {
@@ -80,6 +84,7 @@ impl Default for RelayConfig {
             // carries real backlog volumes without mid-session truncation.
             max_circuit_duration_secs: 86_400,
             max_circuit_bytes: 1 << 29, // 512 MiB per circuit
+            hop_relays: Vec::new(),
         }
     }
 }

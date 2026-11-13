@@ -6,5 +6,8 @@ pub async fn remove_contact(peer_id: String, state: State<'_, AppState>) -> Resu
     crate::validation::parse_peer_id(&peer_id)?;
     let db = state.require_db().await?;
     db.delete_contact(&peer_id).await.map_err(|e| e.to_string())?;
+    drop(db);
+    // SEC-1111-05: shrink the node's announce set immediately.
+    crate::push_contacts::push_contacts_to_node(state.inner()).await;
     Ok(())
 }

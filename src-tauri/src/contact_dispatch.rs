@@ -52,6 +52,8 @@ pub(crate) async fn dispatch_contact_message(
         }
         crate::p2p::MessageType::ContactAccept { nickname, avatar } => {
             let app_state = handle.state::<AppState>();
+            let mut added = false;
+            {
             let db_state = app_state.db.lock().await;
             if let Some(db) = db_state.as_ref() {
                 // S16: an accept is only legit as a reply to a request WE
@@ -64,6 +66,7 @@ pub(crate) async fn dispatch_contact_message(
                 {
                     let _ = db.add_contact(from, nickname, avatar.as_deref()).await;
                     let _ = db.delete_outgoing_contact_request(from).await;
+                    added = true;
                 } else {
                     log::warn!(
                         "Unsolicited ContactAccept from {} — parked as contact request",
@@ -73,6 +76,11 @@ pub(crate) async fn dispatch_contact_message(
                         .add_contact_request(from, "accepted contact request", nickname, avatar.as_deref())
                         .await;
                 }
+            }
+            }
+            // SEC-1111-05: grow the node's announce set (after db lock).
+            if added {
+                crate::push_contacts::push_contacts_to_node(app_state.inner()).await;
             }
             // TI-6: an accept is not a request — dedicated event so the UI
             // can say "request accepted" instead of "New contact request".

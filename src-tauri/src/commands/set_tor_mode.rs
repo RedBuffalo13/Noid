@@ -28,6 +28,14 @@ pub async fn set_tor_mode(
         "tor_only" => TorMode::TorOnly,
         other => return Err(format!("unknown tor mode: {}", other)),
     };
+    // A1: Tor is real-profile-bound — the onion keystore lives under the
+    // real profile root and a decoy session must never create or rotate
+    // the real onion identity. The decoy simply has Tor "not set up".
+    if parsed != TorMode::Off
+        && state.is_decoy.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err("Tor is not configured in this profile".into());
+    }
     log::info!("set_tor_mode: mode={:?} consent_version={}", parsed, consent_version);
     state
         .tor
@@ -53,11 +61,12 @@ pub async fn set_tor_mode(
     // policy. Identity/state are untouched.
     crate::gate_set(&state.p2p_start_tx, false);
     let tx = state.p2p_start_tx.clone();
-    tokio::spawn(async move {
+    let h = tokio::spawn(async move {
         // Let the abort land before reopening — the watcher seq-checks so
         // a fast flip is not lost.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         crate::gate_set(&tx, true);
     });
+    state.session_tasks.lock().await.push(h);
     Ok(state.tor.status())
 }

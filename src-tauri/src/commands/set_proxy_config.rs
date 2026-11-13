@@ -27,7 +27,16 @@ pub async fn set_proxy_config(
     if mode != ProxyMode::Off && cfg.to_transport().is_none() {
         return Err("invalid proxy address — expected ip:port".to_string());
     }
-    cfg.save(&state.app_data_dir)?;
+    // SEC-1111-10: proxy credentials encrypt at rest under the master
+    // key — plaintext only when no key exists yet (pre-unlock).
+    let cipher = {
+        let security = state.security.lock().await;
+        security
+            .get_master_key()
+            .ok()
+            .map(crate::security::field_cipher::FieldCipher::new)
+    };
+    cfg.save_with_cipher(&state.app_data_dir, cipher.as_ref())?;
     cfg.apply();
     Ok(())
 }

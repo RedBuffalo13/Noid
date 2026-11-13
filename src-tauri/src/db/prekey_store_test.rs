@@ -84,6 +84,57 @@ async fn test_get_available_one_time_prekey() {
 }
 
 #[tokio::test]
+async fn test_get_signed_prekeys_for_receive_decrypts_with_cipher() {
+    // Regression: private_key is field-encrypted at rest — the receive path
+    // must decrypt before handing bytes to StaticSecret, or every inbound
+    // X3DH init fails with "Invalid signed prekey length in DB".
+    let (mut db, _dir) = setup_test_db().await.unwrap();
+    db.attach_cipher(std::sync::Arc::new(
+        crate::security::field_cipher::FieldCipher::new([21u8; 32]),
+    ))
+    .await
+    .unwrap();
+    db.save_signed_prekey(&[3u8; 32], &[4u8; 32]).await.unwrap();
+    // Simulate a rotation-overlap prev row.
+    sqlx::query(
+        "INSERT INTO prekeys (key_type, public_key, private_key, created_at) VALUES ('signed_prekey_prev', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+    )
+    .bind(vec![7u8; 32])
+    .bind(db.enc_bytes(&[8u8; 32]).unwrap())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let rows = db.get_signed_prekeys_for_receive().await.unwrap();
+    assert_eq!(rows.len(), 2);
+    // current first ('signed_prekey' < 'signed_prekey_prev'), both decrypted
+    assert_eq!(rows[0].1, vec![4u8; 32]);
+    assert_eq!(rows[1].1, vec![8u8; 32]);
+}
+
+#[tokio::test]
+async fn test_get_signed_prekeys_for_receive_skips_corrupt_row() {
+    let (mut db, _dir) = setup_test_db().await.unwrap();
+    db.attach_cipher(std::sync::Arc::new(
+        crate::security::field_cipher::FieldCipher::new([22u8; 32]),
+    ))
+    .await
+    .unwrap();
+    db.save_signed_prekey(&[3u8; 32], &[4u8; 32]).await.unwrap();
+    // Garbage ciphertext in the prev slot must not kill the handshake.
+    sqlx::query(
+        "INSERT INTO prekeys (key_type, public_key, private_key, created_at) VALUES ('signed_prekey_prev', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+    )
+    .bind(vec![7u8; 32])
+    .bind(vec![0xAAu8; 64])
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let rows = db.get_signed_prekeys_for_receive().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1, vec![4u8; 32]);
+}
+
+#[tokio::test]
 async fn test_delete_all_prekeys() {
     let (db, _dir) = setup_test_db().await.unwrap();
     db.save_identity_key(&[1u8; 32], &[2u8; 32]).await.unwrap();

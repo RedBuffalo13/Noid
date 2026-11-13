@@ -201,9 +201,19 @@
         chatStore.markMessageQueued(event.payload.peer_id, event.payload.message_id);
       }));
 
-      // TI-15: inbound file transfer — offer + completion events.
-      await reg(listen<{ from: string; offer_id: string; name: string; size: number }>("file-offer", (event) => {
-        uiStore.showToast(t("toast.receivingFile", { name: event.payload.name, kb: Math.round(event.payload.size / 1024), from: event.payload.from.slice(0, 8) }));
+      // TI-15 + SEC-1111-06: inbound file transfer — the backend parks
+      // every offer until explicit consent; accept promotes it into the
+      // ingest map, decline drops it.
+      await reg(listen<{ from: string; offer_id: string; name: string; size: number }>("file-offer", async (event) => {
+        const p = event.payload;
+        const ok = window.confirm(
+          t("toast.receivingFile", { name: p.name, kb: Math.round(p.size / 1024), from: p.from.slice(0, 8) }),
+        );
+        try {
+          await invoke(ok ? "accept_file_offer" : "decline_file_offer", { from: p.from, offerId: p.offer_id });
+        } catch (e) {
+          uiStore.showToast(String(e));
+        }
       }));
       await reg(listen<{ from: string; offer_id: string; path: string }>("file-received", (event) => {
         uiStore.showToast(t("toast.fileReceived", { path: event.payload.path }));
@@ -284,6 +294,28 @@
     };
     document.addEventListener("visibilitychange", onVisibility);
 
+    // INT-03: auto-lock — idle for `noid.autolock_min` minutes (default
+    // 15, 0 disables) drops the master key + sessions backend-side and
+    // returns to the PIN screen. Any pointer/keyboard activity re-arms.
+    let lockTimer: ReturnType<typeof setTimeout> | null = null;
+    const armAutoLock = () => {
+      if (lockTimer) clearTimeout(lockTimer);
+      const mins = Number(localStorage.getItem("noid.autolock_min") ?? "15");
+      if (!mins || authStore.screen !== "main") { lockTimer = null; return; }
+      lockTimer = setTimeout(async () => {
+        if (authStore.screen !== "main") return;
+        try { await invoke("lock_now"); } catch {}
+        chatStore.revokeSession();
+        contactStore.revokeSession();
+        uiStore.resetNav("chats");
+        authStore.screen = "pin-entry";
+      }, mins * 60_000);
+    };
+    const ACTIVITY = ["pointerdown", "keydown", "wheel", "touchstart"];
+    const onActivity = () => armAutoLock();
+    ACTIVITY.forEach((e) => document.addEventListener(e, onActivity, { passive: true }));
+    armAutoLock();
+
     // TI-12/TI-15: was two overlapping timers (3s + 5s both calling
     // loadContacts) — one 5s tick covers presence refresh and the open
     // chat, halving wakeups/IPC on battery-bound Android devices.
@@ -296,6 +328,8 @@
       cancelled = true;
       unlisteners.forEach((u) => u());
       clearInterval(interval);
+      if (lockTimer) clearTimeout(lockTimer);
+      ACTIVITY.forEach((e) => document.removeEventListener(e, onActivity));
       document.removeEventListener("visibilitychange", onVisibility);
     };
   });

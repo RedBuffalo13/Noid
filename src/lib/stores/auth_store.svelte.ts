@@ -70,6 +70,20 @@ export const authStore = {
         if (res.kind === "wiped") {
           uiStore.showToast(t("auth.toast.wiped"));
           pin = "";
+          // SEC-1111-10: the system clipboard may hold a peer id, invite
+          // or copied message — wipe it with everything else.
+          try {
+            const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+            await writeText("");
+          } catch { try { await navigator.clipboard.writeText(""); } catch { /* best-effort */ } }
+          // WebView-held state (cache, cookies, storage) is wiped too —
+          // localStorage/sessionStorage included.
+          try {
+            const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+            await getCurrentWebview().clearAllBrowsingData();
+          } catch {
+            try { localStorage.clear(); sessionStorage.clear(); } catch { /* best-effort */ }
+          }
           // FE-A01: revoke every plaintext surface NOW — the database is
           // gone; chat history/drafts/contacts must not linger in stores.
           chatStore.revokeSession();

@@ -9,6 +9,7 @@
     busy = false,
     minLength = 0,
     showDisplay = true,
+    scramble = false,
     oninput,
     onsubmit
   }: {
@@ -24,9 +25,31 @@
     /** OPT-F03: callers with a richer display (clear button, hints) hide
      *  the built-in one and keep only the shared numpad. */
     showDisplay?: boolean;
+    /** SEC-1111-10: shuffle digit positions once per mount — defeats
+     *  shoulder-surfing and fixed-pattern smudge attacks. */
+    scramble?: boolean;
     oninput?: (value: string) => void;
     onsubmit?: (value: string) => void;
   } = $props();
+
+  // Scrambled keypad: crypto-random Fisher–Yates over the 10 digits,
+  // generated once per mount. ⌫ and OK stay in the fixed bottom corners.
+  const keys = (() => {
+    const digits = ['1','2','3','4','5','6','7','8','9','0'];
+    if (scramble) {
+      const rnd = new Uint32Array(10);
+      crypto.getRandomValues(rnd);
+      for (let i = 9; i > 0; i--) {
+        const j = rnd[i] % (i + 1);
+        [digits[i], digits[j]] = [digits[j], digits[i]];
+      }
+    }
+    // 12 slots: first 10 are the (maybe shuffled) digits in row order,
+    // slot 10 is ⌫, slot 11 is OK — but the fixed layout puts ⌫ at 9,
+    // digit at 10, OK at 11 → insert at index 9.
+    const layout = digits.slice(0, 9);
+    return [...layout, '⌫', digits[9], 'OK'];
+  })();
 
   function handleKey(key: string) {
     // FE-22: a PIN must never touch console.log — credentials in plaintext
@@ -55,7 +78,7 @@
 {/if}
 
 <div class="numpad" class:busy>
-  {#each ["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "OK"] as key}
+  {#each keys as key}
     <Button
       variant={key === 'OK' || key === '⌫' ? 'primary' : 'secondary'}
       size="lg"

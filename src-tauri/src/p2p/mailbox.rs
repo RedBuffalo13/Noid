@@ -33,10 +33,21 @@ impl P2PNode {
         if owner_peer_id != self.peer_id.to_string() {
             return Err(anyhow!("Mailbox record owner must be this node"));
         }
+        // META-02 k=2: advertise a second known relay as backup mailbox so
+        // senders can replicate sealed envelopes — a single-node failure
+        // or blackhole must not lose offline mail.
+        let (backup_peer, backup_addr) = self
+            .known_relays
+            .iter()
+            .find(|(p, _)| p.to_string() != mailbox_peer_id)
+            .map(|(p, a)| (Some(p.to_string()), Some(a.to_string())))
+            .unwrap_or((None, None));
         let mut record = crate::p2p::types::SignedMailboxRecord {
             owner_peer_id: owner_peer_id.to_string(),
             mailbox_peer_id: mailbox_peer_id.to_string(),
             relay_addr: relay_addr.to_string(),
+            backup_mailbox_peer_id: backup_peer,
+            backup_relay_addr: backup_addr,
             signature: Vec::new(),
             published_at: Some(
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -69,6 +80,23 @@ impl P2PNode {
         // while every DHT holder is down, self-lookup used to answer
         // "no mailbox" until the next renewal.
         self.local_dht_put(Self::mailbox_dht_key(owner_peer_id).to_vec(), value.clone());
+
+        // META-03: dual-publish the same signed record inside a blinded
+        // descriptor — DHT crawlers can no longer map mailbox pointers to
+        // owners; senders that know our PeerId still resolve it.
+        if let Ok(ed_pub) = crate::p2p::blind_box::own_ed_pub(&self.identity_keypair) {
+            for day in crate::security::blind_descriptor::active_days() {
+                if let Some(blob) = crate::security::blind_descriptor::wrap_descriptor(
+                    &ed_pub, day, &value,
+                ) {
+                    let bkey = crate::security::blind_descriptor::blind_record_key(&ed_pub, day);
+                    let mut brec = kad::Record::new(bkey.clone(), blob.clone());
+                    brec.expires = Some(std::time::Instant::now() + std::time::Duration::from_secs(86400 * 2));
+                    self.queue_dht_put(brec);
+                    self.local_dht_put(bkey.to_vec(), blob);
+                }
+            }
+        }
 
         // D11: remember every mailbox we announced — envelopes parked on a
         // superseded node stay retrievable until their 7d expiry.
@@ -175,6 +203,52 @@ impl P2PNode {
             (pending_msg_id, recipient_peer_id.to_string()),
         );
 
+        Ok(())
+    }
+
+    /// META-02: store a sealed-sender envelope in a blind box. The PoW is
+    /// already solved by the caller — the event loop only forwards.
+    /// `recipient_peer_id` never reaches the wire; it keys the local
+    /// pending-ack map so `MailboxStoreAck` can retire the pending row.
+    pub fn send_to_mailbox_blind(
+        &mut self,
+        mailbox_peer_id: &str,
+        box_id: &str,
+        sealed: Vec<u8>,
+        pow_nonce: u64,
+        client_msg_id: Option<String>,
+        recipient_peer_id: &str,
+    ) -> Result<()> {
+        if mailbox_peer_id == self.peer_id.to_string() {
+            return Err(anyhow!("Refusing mailbox request to self"));
+        }
+        let pending_msg_id = client_msg_id.clone();
+        let request = MailboxRequest::StoreBlind {
+            box_id: box_id.to_string(),
+            sealed,
+            pow_nonce,
+        };
+        let peer_id: libp2p::PeerId = mailbox_peer_id
+            .parse()
+            .map_err(|e| anyhow!("Invalid mailbox peer_id: {}", e))?;
+        if !self.connected_peers.contains(&peer_id) && self.dial_is_backed_off(&peer_id) {
+            return Err(anyhow!("mailbox peer {} in dial backoff", mailbox_peer_id));
+        }
+        self.seed_peer_addrs(&peer_id);
+        if self.pending_mailbox_sends.len() >= 512 {
+            return Err(anyhow!("pending mailbox sends full — retry later"));
+        }
+        let request_id = self.swarm
+            .behaviour_mut()
+            .mailbox
+            .send_request(&peer_id, request);
+        // The blind store carries no recipient id on the wire — the pending
+        // row still keys on the real recipient for the retry/delete path;
+        // the map value is local state and never leaves the node.
+        self.pending_mailbox_sends.insert(
+            request_id.to_string(),
+            (pending_msg_id, recipient_peer_id.to_string()),
+        );
         Ok(())
     }
 

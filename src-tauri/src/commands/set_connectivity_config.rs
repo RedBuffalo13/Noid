@@ -4,7 +4,7 @@ use tauri::State;
 
 /// Update and persist the connectivity policy. The change is pushed to a
 /// running node via `P2PCommand::SetConnectivityConfig` — idle teardown,
-/// redial scope and ping policy apply without a restart.
+/// redial scope and teardown policy apply without a restart.
 #[tauri::command]
 pub async fn set_connectivity_config(
     state: State<'_, AppState>,

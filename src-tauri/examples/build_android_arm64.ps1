@@ -74,6 +74,14 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve Cargo output directory' }
     $targetRoot = ($metadata | ConvertFrom-Json).target_directory
     $library = Join-Path $targetRoot "$target\debug\libnoid_lib.so"
+    # A matching packaged hash does not prove that Android can enter the library.
+    $exports = & (Join-Path $ndkBin 'llvm-nm.exe') --dynamic --defined-only $library
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect Android native exports' }
+    foreach ($symbol in @('Java_com_bst_noid_Rust_onCreate', 'Java_com_bst_noid_Rust_onStart')) {
+        if (-not ($exports -match "\s$symbol$")) {
+            throw "Android native library is missing $symbol; check tauri::mobile_entry_point on run()"
+        }
+    }
     $nativeHash = (Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash
     $staged = Join-Path $jniDir 'libnoid_lib.so'
     if ((Test-Path -LiteralPath $staged) -and

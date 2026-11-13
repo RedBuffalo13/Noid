@@ -59,7 +59,37 @@ impl P2PNode {
             stale.len(),
             zombie.len()
         );
-        // 5) Re-dial bootstrap seeds immediately so the relay book refills
+        // 5) The cached STUN mapping belonged to the dead interface — a
+        //    stale external addr would be re-announced in invites and
+        //    rendezvous slots. Invalidate it and re-probe immediately so
+        //    the new interface's mapping is learned now, not on the next
+        //    20s tick.
+        libp2p_quic::stun_hook::invalidate_observed_mapping();
+        // RV: all reachability evidence belonged to the dead interface —
+        // verified marks on old-interface addrs must not rank the new
+        // network's candidates. Open a fresh AutoNAT honesty window too.
+        self.addr_evidence.sweep_expired();
+        self.addr_evidence = crate::p2p::addr_evidence::EvidenceLedger::default();
+        self.nat_probe_opened_at = None;
+        self.nat_probe_exhausted = false;
+        if self.direct_net_allowed() {
+            if let Some(mapping) = crate::p2p::stun_keepalive::current_or_probe_mapping(
+                self.relay_config.listen_port,
+            ) {
+                let addr = crate::p2p::stun_keepalive::mapping_to_quic_multiaddr(&mapping);
+                // RV-02: fresh mapping on the new interface — candidate only.
+                self.addr_evidence.mark(
+                    &addr.to_string(),
+                    crate::p2p::addr_evidence::EvidenceState::Candidate,
+                    crate::p2p::addr_evidence::EvidenceSource::StunMap,
+                );
+                if !self.external_addrs.contains(&addr) {
+                    self.swarm.add_external_address(addr.clone());
+                    self.external_addrs.push(addr);
+                }
+            }
+        }
+        // 6) Re-dial bootstrap seeds immediately so the relay book refills
         //    on the new interface; then re-reserve and re-discover (each
         //    accepted reservation republishes the mailbox record, A7).
         self.retry_bootstrap_dials();

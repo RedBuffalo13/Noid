@@ -65,14 +65,14 @@ export function getNotificationSettings(): NotificationSettings {
     const stored = localStorage.getItem('notificationSettings');
     return stored ? JSON.parse(stored) : {
       enabled: true,
-      showPreview: true,
+      showPreview: false,
       sound: true,
       onlyMentions: false,
     };
   } catch {
     return {
       enabled: true,
-      showPreview: true,
+      showPreview: false,
       sound: true,
       onlyMentions: false,
     };

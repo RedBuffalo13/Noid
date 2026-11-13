@@ -8,7 +8,14 @@ use tauri::State;
 /// by the first real dial through it.
 #[tauri::command]
 pub async fn test_proxy(state: State<'_, AppState>) -> Result<String, String> {
-    let cfg = NoidProxyConfig::load(&state.app_data_dir);
+    let cipher = {
+        let security = state.security.lock().await;
+        security
+            .get_master_key()
+            .ok()
+            .map(crate::security::field_cipher::FieldCipher::new)
+    };
+    let cfg = NoidProxyConfig::load_with_cipher(&state.app_data_dir, cipher.as_ref());
     if cfg.mode == ProxyMode::Off {
         return Err("proxy is off".to_string());
     }

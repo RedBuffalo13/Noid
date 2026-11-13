@@ -15,7 +15,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub struct SecurityManager {
     master_key: Option<[u8; 32]>,
-    data_dir: PathBuf,
+    /// Vault root — `pub(crate)` so the decoy-vault sibling module can
+    /// derive the `cache/` profile path.
+    pub(crate) data_dir: PathBuf,
 }
 
 impl SecurityManager {
@@ -26,9 +28,11 @@ impl SecurityManager {
         }
     }
 
-    /// Derives a master key from a PIN using Argon2id.
-    pub fn derive_key(&mut self, pin: &str) -> Result<()> {
-        let salt_path = self.data_dir.join("salt.bin");
+    /// Load (or create) the Argon2 salt under `dir`. Refuses to mint a
+    /// fresh salt when `dir/noid.db` already exists — a lost salt would
+    /// silently produce a different master key and orphan every record.
+    fn salt_bytes(dir: &std::path::Path) -> Result<Vec<u8>> {
+        let salt_path = dir.join("salt.bin");
         let salt = if salt_path.exists() {
             let salt_bytes = std::fs::read(&salt_path)?;
             if salt_bytes.len() < 16 {
@@ -37,7 +41,7 @@ impl SecurityManager {
             salt_bytes
         } else {
             // Phase 3.7: If noid.db exists but salt.bin is missing, refuse to generate new salt
-            let db_path = self.data_dir.join("noid.db");
+            let db_path = dir.join("noid.db");
             if db_path.exists() {
                 return Err(anyhow!(
                     "salt.bin is missing but noid.db exists — \
@@ -55,6 +59,13 @@ impl SecurityManager {
         if salt.len() > 48 {
             return Err(anyhow!("Salt file too long, possible corruption"));
         }
+        Ok(salt)
+    }
+
+    /// Argon2id (64MB, 3 iterations, 1 lane) over `pin` with `dir`'s salt —
+    /// the master key lands in `self.master_key`.
+    pub(crate) fn derive_key_in(&mut self, pin: &str, dir: &std::path::Path) -> Result<()> {
+        let salt = Self::salt_bytes(dir)?;
         // Phase 3.2: Use explicit Argon2id parameters (64MB, 3 iterations, 1 lane)
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
@@ -68,6 +79,11 @@ impl SecurityManager {
             .map_err(|e| anyhow!("KDF error: {}", e))?;
         self.set_master_key(*key);
         Ok(())
+    }
+
+    /// Derives a master key from a PIN using Argon2id.
+    pub fn derive_key(&mut self, pin: &str) -> Result<()> {
+        self.derive_key_in(pin, &self.data_dir.clone())
     }
 
     /// Whether first-run PIN setup has already completed — `setup_pins`
@@ -109,6 +125,13 @@ impl SecurityManager {
         let hash_str = fs::read_to_string(hash_path)?;
         let parsed_hash = PasswordHash::new(&hash_str)
             .map_err(|e| anyhow!("Invalid true_pin.hash format: {}", e))?;
+        // SEC-1111-09: refuse to verify against a hash derived under weak
+        // parameters — a swapped-in low-cost hash would make the PIN
+        // brute-forceable.
+        match argon2::Params::try_from(&parsed_hash) {
+            Ok(p) if p.m_cost() >= 65536 && p.t_cost() >= 3 => {}
+            _ => return Err(anyhow!("true_pin.hash uses weak Argon2 parameters — re-set the PIN")),
+        }
         Ok(Argon2::default()
             .verify_password(pin.as_bytes(), &parsed_hash)
             .is_ok())
@@ -123,6 +146,12 @@ impl SecurityManager {
         self.master_key.zeroize();
         self.master_key = Some(key);
         key.zeroize();
+    }
+
+    /// INT-03: lock — drop the master key without wiping vault data. The
+    /// next `get_master_key` fails until re-login re-derives it.
+    pub fn clear_master_key(&mut self) {
+        self.master_key.zeroize();
     }
 
     /// S14: message-content ciphertexts carry a `NOIDMSG2` magic and are
@@ -205,6 +234,14 @@ impl SecurityManager {
         if let Ok(hash_str) = fs::read_to_string(hash_path) {
             match PasswordHash::new(&hash_str) {
                 Ok(parsed_hash) => {
+                    // SEC-1111-09: weak-parameter kill.hash never verifies.
+                    match argon2::Params::try_from(&parsed_hash) {
+                        Ok(p) if p.m_cost() >= 65536 && p.t_cost() >= 3 => {}
+                        _ => {
+                            log::error!("kill.hash uses weak Argon2 parameters — wipe is DISABLED, re-set the kill PIN");
+                            return false;
+                        }
+                    }
                     return Argon2::default()
                         .verify_password(pin.as_bytes(), &parsed_hash)
                         .is_ok();

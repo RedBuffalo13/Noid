@@ -177,6 +177,35 @@ where
     }
 }
 
+/// SEC-1111-09: strict identity load — an ENCRYPTED key file that fails
+/// GCM tag verification is tampered or bound to a different master key.
+/// Silently regenerating would mint a new PeerId under the user's nose
+/// (contacts unreachable, attacker-forced identity loss). Fail closed;
+/// legacy plaintext still migrates, missing files still generate.
+pub fn load_or_regen_strict<F, V>(
+    path: &Path,
+    master_key: &[u8; 32],
+    material_fn: F,
+    validate: V,
+    generated: &mut bool,
+) -> Result<Vec<u8>>
+where
+    F: FnOnce() -> Result<Vec<u8>>,
+    V: Fn(&[u8]) -> bool,
+{
+    if path.exists() && is_encrypted(path) {
+        // Fail closed: quarantine nothing, regenerate nothing.
+        return load(path, master_key).map_err(|e| {
+            anyhow!(
+                "identity key {} failed authentication ({}) — refusing to regenerate silently",
+                path.display(),
+                e
+            )
+        });
+    }
+    load_or_regen(path, master_key, material_fn, validate, generated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

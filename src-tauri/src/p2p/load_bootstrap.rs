@@ -59,19 +59,30 @@ pub fn load_bootstrap_nodes(config_dir: &Path) -> Vec<Multiaddr> {
     result
 }
 
-/// Parse `{"nodes": ["multiaddr", ...]}` — returns valid addrs only.
+/// Parse `{"nodes": ["multiaddr", ...], "allow_unpinned": bool}` — returns
+/// valid addrs only. SEC-1111-02: addrs without a `/p2p/<PeerId>` pin are
+/// accepted only when the file explicitly sets `"allow_unpinned": true`
+/// (default false) — an unpinned seed lets any MITM answer its dial and be
+/// adopted into Kademlia + the relay book under a learned identity.
 fn parse_nodes_json(content: &str) -> Vec<Multiaddr> {
     match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(json) => match json.get("nodes").and_then(|n| n.as_array()) {
-            Some(nodes) => {
-                let addr_strs: Vec<&str> = nodes.iter().filter_map(|n| n.as_str()).collect();
-                parse_bootstrap_addrs(&addr_strs)
+        Ok(json) => {
+            let allow_unpinned = json
+                .get("allow_unpinned")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match json.get("nodes").and_then(|n| n.as_array()) {
+                Some(nodes) => {
+                    let addr_strs: Vec<&str> =
+                        nodes.iter().filter_map(|n| n.as_str()).collect();
+                    parse_bootstrap_addrs(&addr_strs, allow_unpinned)
+                }
+                None => {
+                    log::warn!("bootstrap nodes: 'nodes' field missing or not an array");
+                    Vec::new()
+                }
             }
-            None => {
-                log::warn!("bootstrap nodes: 'nodes' field missing or not an array");
-                Vec::new()
-            }
-        },
+        }
         Err(e) => {
             log::warn!("Failed to parse bootstrap nodes JSON: {}", e);
             Vec::new()
@@ -79,11 +90,22 @@ fn parse_nodes_json(content: &str) -> Vec<Multiaddr> {
     }
 }
 
-fn parse_bootstrap_addrs(addrs: &[&str]) -> Vec<Multiaddr> {
+fn parse_bootstrap_addrs(addrs: &[&str], allow_unpinned: bool) -> Vec<Multiaddr> {
     let mut result = Vec::new();
     for addr_str in addrs {
         match addr_str.parse::<Multiaddr>() {
             Ok(addr) => {
+                if !allow_unpinned
+                    && !addr
+                        .iter()
+                        .any(|p| matches!(p, libp2p::core::multiaddr::Protocol::P2p(_)))
+                {
+                    log::warn!(
+                        "Refusing unpinned bootstrap addr {} (set \"allow_unpinned\": true to accept)",
+                        addr
+                    );
+                    continue;
+                }
                 log::debug!("Loaded bootstrap node: {}", addr);
                 result.push(addr);
             }

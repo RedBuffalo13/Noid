@@ -89,60 +89,32 @@ pub async fn build_swarm(
             cfg
         });
 
-    // Optional onion transport — must be registered while the builder is
-    // still in the transport phase (before with_dns/with_websocket/relay).
-    // OptionalTransport keeps a single phase type whether or not a factory
-    // was supplied (or the feature exists).
+    // Optional onion transport + WebSocket/Secure-WebSocket transport —
+    // registered while the builder is still in the transport phase
+    // (before with_dns/relay). META-06: a single `websocket::Config` with
+    // `tls::Config::client()` serves BOTH `/ws` and `/wss` multiaddrs —
+    // `with_websocket` never sets a TLS config, so `/wss` dials (the
+    // censorship-resistant :443 front) would otherwise fail outright.
     let builder = builder.with_other_transport(move |key| {
-        use libp2p::core::transport::{Boxed, OptionalTransport};
-        use libp2p::core::muxing::StreamMuxerBox;
-        match onion_transport {
-            Some(make) => make(key).map(OptionalTransport::some),
-            None => Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                OptionalTransport::<Boxed<(libp2p::PeerId, StreamMuxerBox)>>::none(),
-            ),
-        }
+        use libp2p::core::transport::{OptionalTransport, Transport as _};
+
+        let ws = ws_transport(key)?;
+        let onion_opt = match onion_transport {
+            Some(make) => OptionalTransport::some(make(key)?),
+            None => OptionalTransport::none(),
+        };
+        Ok(ws
+            .or_transport(onion_opt)
+            .map(|either, _| either.into_inner())
+            .boxed())
     })?;
 
-    // Non-Android: standard DNS + WebSocket phases.
+    // DNS for the TCP/QUIC dial paths (IP-literal addrs pass through).
+    // Android: hickory `Transport::system` needs /etc/resolv.conf — the
+    // noid network dials IP literals only, so the phase is skipped; the
+    // WSS inner transport above carries its own DoT resolver.
     #[cfg(not(target_os = "android"))]
-    let builder = builder
-        .with_dns()?
-        .with_websocket(
-            noise::Config::new,
-            yamux::Config::default,
-        )
-        .await?;
-
-    // Android: libp2p's `with_websocket` unconditionally wraps the WS-side TCP
-    // in `libp2p_dns::tokio::Transport::system`, which reads the system
-    // resolver config via hickory. Android has no /etc/resolv.conf, so swarm
-    // construction fails with `WebsocketErrorInner::Dns` ("Dns") regardless
-    // of `with_dns`/`without_dns`. Build the equivalent TCP+WebSocket
-    // transports manually, without the DNS wrapper — the noid network only
-    // ever dials IP-literal multiaddrs (bootstrap nodes, invite addrs, DHT
-    // records and relay addresses are all numeric).
-    #[cfg(target_os = "android")]
-    let builder = builder.with_other_transport(
-        |key| -> Result<_, Box<dyn std::error::Error + Send + Sync>> {
-            use libp2p::core::{
-                muxing::StreamMuxerBox, transport::Transport as _, upgrade::Version,
-            };
-
-            // TR-03: plain TCP is already registered by `.with_tcp` above —
-            // only the WebSocket transport is built here. The previous
-            // `ws.or_transport(tcp)` registered a SECOND TCP instance and
-            // doubled every TCP listener/dial on Android.
-            let ws_transport = libp2p::websocket::Config::new(
-                libp2p::tcp::tokio::Transport::new(tcp::Config::default()),
-            )
-            .upgrade(Version::V1Lazy)
-            .authenticate(noise::Config::new(key)?)
-            .multiplex(yamux::Config::default())
-            .map(|(p, m), _| (p, StreamMuxerBox::new(m)));
-            Ok(ws_transport)
-        },
-    )?;
+    let builder = builder.with_dns()?;
 
     let mut swarm = builder
         .with_relay_client(
@@ -159,6 +131,50 @@ pub async fn build_swarm(
 
     force_kad_server(&mut swarm, relay_config);
     Ok(swarm)
+}
+
+/// Standalone WS/WSS transport over a DNS-resolving TCP inner — shared by
+/// the main swarm (composed with the optional onion transport above) and
+/// the ephemeral mailbox swarm. One `websocket::Config` with
+/// `tls::Config::client()` serves BOTH `/ws` and `/wss` multiaddrs.
+pub fn ws_transport(
+    key: &libp2p::identity::Keypair,
+) -> Result<
+    libp2p::core::transport::Boxed<(libp2p::PeerId, libp2p::core::muxing::StreamMuxerBox)>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    use libp2p::core::muxing::StreamMuxerBox;
+    use libp2p::core::transport::{Boxed, Transport as _};
+    use libp2p::core::upgrade::Version;
+
+    type Err = Box<dyn std::error::Error + Send + Sync>;
+    let tcp_t = libp2p::tcp::tokio::Transport::new(tcp::Config::default());
+    // The WS inner transport must resolve `/dns4|6/` itself — the
+    // outer `.with_dns()` phase only wraps the TCP/QUIC transports.
+    #[cfg(not(target_os = "android"))]
+    let dns_tcp = libp2p::dns::tokio::Transport::system(tcp_t)
+        .map_err(|e| -> Err { e.to_string().into() })?;
+    // Android has no /etc/resolv.conf — `Transport::system` fails at
+    // swarm build. Cloudflare DoT (853) resolves without system conf
+    // AND keeps DNS inside TLS, invisible to on-path inspection.
+    #[cfg(target_os = "android")]
+    let dns_tcp = libp2p::dns::tokio::Transport::custom(
+        tcp_t,
+        libp2p::dns::ResolverConfig::from_name_servers(
+            hickory_resolver::config::CLOUDFLARE.tls().collect(),
+        ),
+        libp2p::dns::ResolverOpts::default(),
+    );
+
+    let mut ws_cfg = libp2p::websocket::Config::new(dns_tcp);
+    ws_cfg.set_tls_config(libp2p::websocket::tls::Config::client());
+    let ws: Boxed<(libp2p::PeerId, StreamMuxerBox)> = ws_cfg
+        .upgrade(Version::V1Lazy)
+        .authenticate(noise::Config::new(key)?)
+        .multiplex(yamux::Config::default())
+        .map(|(p, m), _| (p, StreamMuxerBox::new(m)))
+        .boxed();
+    Ok(ws)
 }
 
 // Kademlia starts in Client mode and only promotes itself to Server

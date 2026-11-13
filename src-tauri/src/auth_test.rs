@@ -144,5 +144,8 @@ async fn test_kill_pin_verifies_under_lockout() {
     // Locked out, yet the kill pin still verifies — so the wipe path in
     // login()/kill_switch() runs before the lockout gate can reject it.
     assert!(security.verify_kill_pin("killpin12345"));
-    assert!(auth.is_locked_out().await);
+    // Independence is pinned on the attempt counter, not the timed flag:
+    // the Argon2id derives above can outlive the 60s backoff window on
+    // slow machines, which would mask a real counter reset.
+    assert_eq!(auth.get_failed_attempts().await, 5);
 }

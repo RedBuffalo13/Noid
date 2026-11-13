@@ -6,14 +6,15 @@
   type ConnectivityConfig = {
     on_demand: boolean;
     idle_conn_ttl_secs: number;
-    contact_ping_interval_secs: number;
     mailbox_poll_secs: number;
   };
 
   let onDemand = $state(false);
   let idleTtl = $state(120);
-  let pingInterval = $state(120);
-  let mailboxPoll = $state(120);
+  let mailboxPoll = $state(300);
+  let cover = $state(false);
+  let hopEntry = $state("");
+  let hopExit = $state("");
   let busy = $state(false);
   let saved = $state(false);
   let error = $state("");
@@ -23,8 +24,12 @@
       const c = await invoke<ConnectivityConfig>("get_connectivity_config");
       onDemand = c.on_demand;
       idleTtl = c.idle_conn_ttl_secs;
-      pingInterval = c.contact_ping_interval_secs;
       mailboxPoll = c.mailbox_poll_secs;
+      cover = localStorage.getItem("noid.cover") === "1";
+      if (cover) invoke("set_cover_traffic", { enabled: true }).catch(() => {});
+      const rc = await invoke<{ hop_relays?: string[] }>("get_relay_config");
+      hopEntry = rc.hop_relays?.[0] ?? "";
+      hopExit = rc.hop_relays?.[1] ?? "";
     } catch (e) {
       error = String(e);
     }
@@ -39,10 +44,13 @@
         config: {
           on_demand: onDemand,
           idle_conn_ttl_secs: Math.max(10, idleTtl | 0),
-          contact_ping_interval_secs: Math.max(5, pingInterval | 0),
           mailbox_poll_secs: Math.max(30, mailboxPoll | 0),
         },
       });
+      await invoke("set_cover_traffic", { enabled: cover });
+      localStorage.setItem("noid.cover", cover ? "1" : "0");
+      const hops = [hopEntry.trim(), hopExit.trim()].filter((s) => s.length > 0);
+      await invoke("set_hop_relays", { relays: hops });
       saved = true;
     } catch (e) {
       error = String(e);
@@ -68,14 +76,25 @@
   </div>
 
   <div class="form-group">
-    <label class="label" for="ping-int">{t("conn.ping_interval")}</label>
-    <input id="ping-int" class="input-box" type="number" min="5" bind:value={pingInterval} disabled={!onDemand} />
-  </div>
-
-  <div class="form-group">
     <label class="label" for="mbox-poll">{t("conn.mailbox_poll")}</label>
     <input id="mbox-poll" class="input-box" type="number" min="30" bind:value={mailboxPoll} />
   </div>
+
+  <label class="toggle-row">
+    <input type="checkbox" bind:checked={cover} />
+    <span>{t("conn.cover")}</span>
+  </label>
+  <p class="hint">{t("conn.cover_hint")}</p>
+
+  <div class="form-group">
+    <label class="label" for="hop-entry">{t("conn.hop_entry")}</label>
+    <input id="hop-entry" class="input-box" type="text" bind:value={hopEntry} placeholder="/ip4/1.2.3.4/tcp/4020/p2p/12D3…" />
+  </div>
+  <div class="form-group">
+    <label class="label" for="hop-exit">{t("conn.hop_exit")}</label>
+    <input id="hop-exit" class="input-box" type="text" bind:value={hopExit} placeholder="12D3KooW…" />
+  </div>
+  <p class="hint">{t("conn.hop_hint")}</p>
 
   <button class="btn-wide" onclick={apply} disabled={busy}>{t("settings.save")}</button>
   {#if saved}<p class="hint ok">{t("settings.saved")}</p>{/if}

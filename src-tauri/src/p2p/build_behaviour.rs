@@ -27,13 +27,18 @@ pub fn build_behaviour(
 
     let gossipsub_config = gossipsub::ConfigBuilder::default()
         .heartbeat_interval(Duration::from_secs(10))
-        .validation_mode(gossipsub::ValidationMode::Strict)
+        .validation_mode(gossipsub::ValidationMode::Permissive)
         .message_id_fn(message_id_fn)
         .build()
         .map_err(|msg| anyhow!("Gossipsub config error: {msg}"))?;
 
+    // META-04: anonymous gossipsub — every message is already sealed inside
+    // a RoomEnvelope (V2 hides even that), so the libp2p-layer sender
+    // signature only leaked the publisher's PeerId to transit peers.
+    // Envelope signatures still authenticate authors for members.
+    let _ = key;
     let gossipsub = gossipsub::Behaviour::new(
-        gossipsub::MessageAuthenticity::Signed(key.clone()),
+        gossipsub::MessageAuthenticity::Anonymous,
         gossipsub_config,
     )?;
 
@@ -85,9 +90,11 @@ pub fn build_behaviour(
         // receiver answers only after its app layer reports durable
         // processing (SQLite write + decrypt), which on Android cold
         // paths exceeds 10s and produced phantom MessageFailed +
-        // resend storms. 30s matches the parked-ack sweep TTL.
+        // resend storms. 90s also covers a cold Tor rendezvous build
+        // (~45-90s on mobile), which used to abort ContactRequests
+        // mid-handshake.
         request_response::Config::default()
-            .with_request_timeout(std::time::Duration::from_secs(30)),
+            .with_request_timeout(std::time::Duration::from_secs(90)),
     );
 
     // Phase B.2: Mailbox protocol for offline message delivery.
@@ -97,6 +104,17 @@ pub fn build_behaviour(
     let mailbox = request_response::json::Behaviour::new(
         [(
             libp2p::StreamProtocol::new("/noid-mailbox/1.0.0"),
+            request_response::ProtocolSupport::Full,
+        )],
+        request_response::Config::default()
+            .with_request_timeout(std::time::Duration::from_secs(90)),
+    );
+
+    // META-05: hop-forwarding for the 2-hop privacy relay. Generous
+    // timeout — a request traverses two full req-resp round trips.
+    let hop = request_response::json::Behaviour::new(
+        [(
+            libp2p::StreamProtocol::new("/noid-hop/1.0.0"),
             request_response::ProtocolSupport::Full,
         )],
         request_response::Config::default()
@@ -142,6 +160,7 @@ pub fn build_behaviour(
             direct_discovery.then(upnp::tokio::Behaviour::default),
         ),
         mailbox,
+        hop,
         limits: libp2p::connection_limits::Behaviour::new(
             libp2p::connection_limits::ConnectionLimits::default()
                 .with_max_pending_incoming(Some(32))

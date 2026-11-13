@@ -51,10 +51,6 @@ struct Inner {
     running: Option<Running>,
     /// In-flight generation build; aborted on the next mode change.
     building: Option<tokio::task::JoinHandle<()>>,
-    /// Node's transport inbound sender, parked until a generation's rend
-    /// stream exists — `wire_inbound` is called once at node build time,
-    /// before any generation is running.
-    pending_inbound: Option<futures::channel::mpsc::Sender<arti_client::DataStream>>,
 }
 
 /// Owns the Tor lifecycle for one login session.
@@ -65,6 +61,10 @@ pub struct TorSupervisor {
     /// Live client of the current generation — the node's `TorTransport`
     /// reads it at dial time. `None` whenever no generation is running.
     client_slot: Arc<std::sync::Mutex<Option<Arc<TorClient<PreferredRuntime>>>>>,
+    /// Hot-swappable inbound destination for accepted onion streams —
+    /// `wire_inbound` replaces it on every node (re)build while the Tor
+    /// generation and its accept loop keep running.
+    inbound_slot: super::accept_loop::InboundSlot,
 }
 
 impl TorSupervisor {
@@ -80,10 +80,10 @@ impl TorSupervisor {
                 consent_version: 0,
                 running: None,
                 building: None,
-                pending_inbound: None,
             })),
             tor_dir,
             client_slot: Arc::new(std::sync::Mutex::new(None)),
+            inbound_slot: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -100,6 +100,38 @@ impl TorSupervisor {
         inner.identity = Some(identity);
         self.set_status(|s| s.onion_address = Some(addr.clone()));
         Ok(addr)
+    }
+
+    /// SEC-1111-05: rotate the onion identity — drops the running service
+    /// generation, erases the persisted hsid key material, and regenerates
+    /// a fresh identity (new `.onion`). Callers in `TorOnly`/`Additional`
+    /// must re-set the desired mode afterwards to relaunch the service.
+    pub fn rotate_identity(&self, master: &[u8; 32]) -> Result<String> {
+        let mut inner = self.lock()?;
+        if let Some(r) = inner.running.take() {
+            drop(r);
+        }
+        if let Some(b) = inner.building.take() {
+            b.abort();
+        }
+        inner.generation += 1;
+        // Erase the on-disk hsid key material — the encrypted keystore is
+        // a single NOIDKEY2 file; deleting it makes the next ensure
+        // generate a fresh identity. Wipe the hs state dir too so stale
+        // descriptors/keys cannot resurrect the old service.
+        let key_file = self.tor_dir.join("keys").join("keystore.noidkey");
+        if key_file.exists() {
+            std::fs::remove_file(&key_file)
+                .map_err(|e| anyhow::anyhow!("onion keystore erase failed: {}", e))?;
+        }
+        let hs_dir = self.tor_dir.join("hs");
+        if hs_dir.exists() {
+            let _ = std::fs::remove_dir_all(&hs_dir);
+        }
+        inner.identity = None;
+        self.set_status(|s| s.onion_address = None);
+        drop(inner);
+        self.ensure_identity(master)
     }
 
     /// Latest status snapshot; also performs the fatal-protocol check so a
@@ -166,6 +198,7 @@ impl TorSupervisor {
                 s.generation = generation;
                 s.bootstrap_percent = 0;
                 s.service_published = false;
+                s.publish_state = super::status::PublishState::Unpublished;
             });
             return Ok(());
         }
@@ -213,21 +246,132 @@ impl TorSupervisor {
         let inner_arc = self.inner.clone();
         let status_tx = self.status_tx.clone();
         let client_slot = self.client_slot.clone();
+        let inbound_slot = self.inbound_slot.clone();
         let dir_state = self.tor_dir.join("arti-state");
         let dir_cache = self.tor_dir.join("arti-cache");
+        // INT-01: operator-supplied bridge lines (torrc format) — one per
+        // line in tor_dir/bridges.txt; absent/empty = direct entry guards.
+        let bridges = std::fs::read_to_string(self.tor_dir.join("bridges.txt"))
+            .map(|s| {
+                s.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let handle = tokio::spawn(async move {
-            match build_generation(dir_state, dir_cache, status_tx.clone()).await {
+            match build_generation(dir_state, dir_cache, status_tx.clone(), bridges).await {
                 Ok(mut running) => {
                     match launch_service(&running.client, service).await {
                         Ok((svc, rend)) => {
-                            running.service = Some(svc);
+                            running.service = Some(svc.clone());
                             running.rend = Some(rend);
                             set_status(&status_tx, |s| {
                                 s.state = TorState::Ready;
                                 s.service_published = false; // reaches Ready when reachable — monitor updates
+                                s.publish_state = super::status::PublishState::Unpublished;
                                 s.effective_mode = mode;
                             });
-                            install(inner_arc, generation, running, &status_tx, &client_slot);
+                            // Publish-visibility monitor: poll the service
+                            // state so `service_published` reflects a real
+                            // reachable descriptor instead of staying a
+                            // permanent `false`. RV-05: `publish_state` adds
+                            // the stronger tier — `Published` only after a
+                            // self-connect probe walked the full client path
+                            // (descriptor → intro → rendezvous → accept).
+                            let weak_svc = Arc::downgrade(&svc);
+                            let mon_tx = status_tx.clone();
+                            let probe_client = running.client.clone();
+                            let onion_host = mon_tx
+                                .borrow()
+                                .onion_address
+                                .clone()
+                                .map(|a| a.trim_end_matches(".onion").to_string());
+                            tokio::spawn(async move {
+                                use super::status::PublishState;
+                                let mut iv =
+                                    tokio::time::interval(Duration::from_secs(10));
+                                let (res_tx, mut res_rx) =
+                                    tokio::sync::mpsc::channel::<bool>(4);
+                                let mut probe_in_flight = false;
+                                let mut last_probe_at: Option<std::time::Instant> = None;
+                                let mut last_probe_ok: Option<std::time::Instant> = None;
+                                let mut probe_fail_streak: u8 = 0;
+                                loop {
+                                    tokio::select! {
+                                        _ = iv.tick() => {}
+                                        Some(ok) = res_rx.recv() => {
+                                            probe_in_flight = false;
+                                            if ok {
+                                                last_probe_ok = Some(std::time::Instant::now());
+                                                probe_fail_streak = 0;
+                                            } else {
+                                                probe_fail_streak =
+                                                    probe_fail_streak.saturating_add(1);
+                                            }
+                                        }
+                                    }
+                                    let Some(svc) = weak_svc.upgrade() else {
+                                        break;
+                                    };
+                                    let reachable = svc
+                                        .status()
+                                        .state()
+                                        .is_fully_reachable();
+                                    // Probe freshness: a success stays
+                                    // authoritative for 10min; probes run
+                                    // at most every 3min while reachable.
+                                    let probe_fresh = last_probe_ok
+                                        .map(|t| t.elapsed() < std::time::Duration::from_secs(600))
+                                        .unwrap_or(false);
+                                    let publish = if !reachable {
+                                        PublishState::Unpublished
+                                    } else if probe_fresh && probe_fail_streak < 3 {
+                                        PublishState::Published
+                                    } else {
+                                        PublishState::Publishing
+                                    };
+                                    set_status(&mon_tx, |s| {
+                                        s.service_published = reachable;
+                                        s.publish_state = publish;
+                                    });
+                                    // Schedule a self-connect probe: on the
+                                    // first reachable tick, then every 3min.
+                                    if reachable
+                                        && !probe_in_flight
+                                        && last_probe_at
+                                            .map(|t| t.elapsed() > std::time::Duration::from_secs(180))
+                                            .unwrap_or(true)
+                                    {
+                                        if let (Some(h), c) =
+                                            (onion_host.clone(), probe_client.clone())
+                                        {
+                                            probe_in_flight = true;
+                                            last_probe_at =
+                                                Some(std::time::Instant::now());
+                                            let tx = res_tx.clone();
+                                            tokio::spawn(async move {
+                                                let ok = super::self_probe::probe_self_service(
+                                                    c,
+                                                    &h,
+                                                    super::onion_addr::ONION_VPORT,
+                                                )
+                                                .await;
+                                                let _ = tx.send(ok).await;
+                                            });
+                                        }
+                                    }
+                                }
+                            });
+                            install(
+                                inner_arc,
+                                generation,
+                                running,
+                                &status_tx,
+                                &client_slot,
+                                &inbound_slot,
+                            );
                         }
                         Err(e) => {
                             log::error!("Tor onion service launch failed: {}", e);
@@ -267,20 +411,25 @@ impl TorSupervisor {
     }
 
     /// Feed accepted inbound streams into the node's transport channel.
-    /// Called once at node build time — possibly before any generation is
-    /// running; the sender is parked and wired automatically when the next
-    /// generation's rend stream appears.
+    /// Called at every node (re)build — possibly before any generation is
+    /// running. The sender lands in the shared `InboundSlot` the live
+    /// accept loop reads per stream, so a rebuilt node rewires inbound
+    /// delivery WITHOUT restarting the Tor generation.
     pub fn wire_inbound(&self, tx: futures::channel::mpsc::Sender<arti_client::DataStream>) -> bool {
+        if let Ok(mut slot) = self.inbound_slot.lock() {
+            *slot = Some(tx);
+        }
         let Ok(mut inner) = self.lock() else { return false };
         if let Some(running) = inner.running.as_mut() {
             if running.accept.is_none() {
                 if let Some(rend) = running.rend.take() {
-                    running.accept = Some(super::accept_loop::spawn_accept_loop(rend, tx));
-                    return true;
+                    running.accept = Some(super::accept_loop::spawn_accept_loop(
+                        rend,
+                        self.inbound_slot.clone(),
+                    ));
                 }
             }
         }
-        inner.pending_inbound = Some(tx);
         true
     }
 
@@ -351,22 +500,24 @@ fn install(
     mut running: Running,
     status_tx: &watch::Sender<TorStatus>,
     client_slot: &Arc<std::sync::Mutex<Option<Arc<TorClient<PreferredRuntime>>>>>,
+    inbound_slot: &super::accept_loop::InboundSlot,
 ) {
     let Ok(mut inner) = inner.lock() else {
         return;
     };
     if inner.generation == generation {
-        // Publish the client to the transport slot and wire any parked
-        // inbound sender the node registered before bootstrap finished.
+        // Publish the client to the transport slot and start the accept
+        // loop on the shared inbound slot — whatever sender the node
+        // last registered via wire_inbound (or will register) is picked
+        // up per stream.
         if let Ok(mut slot) = client_slot.lock() {
             *slot = Some(running.client.clone());
         }
-        if let Some(tx) = inner.pending_inbound.take() {
-            if let Some(rend) = running.rend.take() {
-                running.accept = Some(super::accept_loop::spawn_accept_loop(rend, tx));
-            } else {
-                inner.pending_inbound = Some(tx);
-            }
+        if let Some(rend) = running.rend.take() {
+            running.accept = Some(super::accept_loop::spawn_accept_loop(
+                rend,
+                inbound_slot.clone(),
+            ));
         }
         inner.running = Some(running);
     } else {
@@ -390,6 +541,7 @@ async fn build_generation(
     dir_state: PathBuf,
     dir_cache: PathBuf,
     status_tx: watch::Sender<TorStatus>,
+    bridges: Vec<String>,
 ) -> Result<Running> {
     // rustls needs a CryptoProvider before any TLS handshake — Android
     // never goes through main(), so the provider must be installed at the
@@ -427,6 +579,28 @@ async fn build_generation(
         .storage()
         .keystore()
         .enabled(arti_client::config::BoolOrAuto::Explicit(false));
+    // INT-01: bridge lines gate the entry guard — a network that blocks
+    // directory/guard IPs can't keep a bridged client out.
+    if !bridges.is_empty() {
+        let mut parsed = 0usize;
+        for line in &bridges {
+            match line.parse::<arti_client::config::BridgeConfigBuilder>() {
+                Ok(b) => {
+                    builder.bridges().bridges().push(b);
+                    parsed += 1;
+                }
+                Err(e) => log::warn!("Skipping invalid bridge line: {}", e),
+            }
+        }
+        if parsed > 0 {
+            builder
+                .bridges()
+                .enabled(arti_client::config::BoolOrAuto::Explicit(true));
+            log::info!("Tor bridges configured: {}", parsed);
+        } else {
+            log::warn!("bridges.txt present but no valid bridge lines — ignored");
+        }
+    }
     let config = builder.build().context("tor client config build")?;
     let client = TorClient::builder()
         .config(config)

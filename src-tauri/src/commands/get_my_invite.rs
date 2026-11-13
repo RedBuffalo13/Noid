@@ -43,20 +43,27 @@ pub async fn get_my_invite(state: State<'_, AppState>) -> Result<String, String>
         a
     };
     // tor_only: direct/STUN hints never belong in the invite — the only
-    // reachable path is our onion service. An onion hint is ALWAYS allowed
-    // (it's a hint, not a promise of reachability).
+    // reachable path is our onion service. RV-05: the onion hint ships
+    // ONLY when `publish_state == Published` — `is_fully_reachable` alone
+    // left invites carrying onion addrs whose HSDir descriptor wasn't up
+    // yet (the cold-dial timeouts seen in the thousandth-user test); the
+    // self-connect probe is the real publication proof.
     let tor_status = state.tor.status();
     let tor_only = tor_status.desired_mode == crate::p2p::tor::mode::TorMode::TorOnly;
-    if let Some(onion) = &tor_status.onion_address {
-        let host = onion.strip_suffix(".onion").unwrap_or(onion);
-        let onion_addr = format!(
-            "/onion3/{}:{}/p2p/{}",
-            host,
-            crate::p2p::tor::onion_addr::ONION_VPORT,
-            peer
-        );
-        if !addrs.contains(&onion_addr) {
-            addrs.push(onion_addr);
+    let onion_published = tor_status.publish_state
+        == crate::p2p::tor::status::PublishState::Published;
+    if onion_published {
+        if let Some(onion) = &tor_status.onion_address {
+            let host = onion.strip_suffix(".onion").unwrap_or(onion);
+            let onion_addr = format!(
+                "/onion3/{}:{}/p2p/{}",
+                host,
+                crate::p2p::tor::onion_addr::ONION_VPORT,
+                peer
+            );
+            if !addrs.contains(&onion_addr) {
+                addrs.insert(0, onion_addr);
+            }
         }
     }
     // The STUN-mapped QUIC addr is a hole-punch dial candidate even while
@@ -91,5 +98,41 @@ pub async fn get_my_invite(state: State<'_, AppState>) -> Result<String, String>
         })
         .cloned()
         .collect();
-    Ok(invite::build_invite(&peer, &shareable))
+    // RV-04: verified paths lead the dial plan — the hint cap then keeps
+    // proven addrs and pushes unproven ones out of the top slots (they
+    // remain valid fallbacks, just later/absent from the string).
+    let shareable =
+        crate::p2p::rank_invite_addrs::rank_invite_addrs(shareable, &peer, &status.addr_evidence);
+    let mut out = invite::build_invite(&peer, &shareable);
+    // SEC-1111-03: every invite carries a one-time rendezvous secret — the
+    // node polls `H(rv)` for inbound announcers, so our public PeerId never
+    // names a Mainline-DHT slot and a burned invite cannot be replayed to
+    // find us later. The secret is REUSED for 20 minutes: the UI re-reads
+    // the invite on every relay-status tick, and a fresh secret each read
+    // invalidated the one just copied (and made the displayed invite flap).
+    let secret = {
+        let mut slot = state.invite_rv.lock().await;
+        match slot.as_ref() {
+            Some((s, ts)) if ts.elapsed() < std::time::Duration::from_secs(1200) => {
+                s.clone()
+            }
+            _ => {
+                let s = crate::p2p::direct_net_policy::fresh_rv_secret();
+                *slot = Some((s.clone(), std::time::Instant::now()));
+                s
+            }
+        }
+    };
+    if let Some(tx) = state.p2p() {
+        let _ = crate::send_p2p_cmd(
+            &tx,
+            crate::p2p::P2PCommand::SetRendezvousSecret {
+                secret: secret.clone(),
+            },
+        )
+        .await;
+    }
+    out.push_str("?rv=");
+    out.push_str(&secret);
+    Ok(out)
 }

@@ -65,7 +65,8 @@ configured.
    other's IP. Offline envelopes park on mailbox nodes encrypted.
 
 Tor DPI-blocking carrier? Switch to a non-filtering network or run an
-external VPN — bridge transports are planned but not in v0.2.0. Plain
+external VPN — or add bridge lines (torrc format) under Settings →
+Tor → "Tor bridges". Plain
 P2P mode still works if at least one side is reachable.
 
 ### 2. VPS as a permanent relay
@@ -149,7 +150,8 @@ the same binary — no external tor daemon, no Orbot, no proxy settings.
 - **Supervision**: generation-owned client/service with bounded
   shutdown, deduplicated rebuilds, `tor-status` event stream to the UI.
 - **Limitation**: on networks with Tor DPI filtering the client needs
-  an external VPN or bridges (pluggable transports — planned).
+  an external VPN or bridge lines (Settings → Tor → "Tor bridges",
+  persisted to `bridges.txt`, applied on every Tor restart).
 
 ## What an observer can see
 

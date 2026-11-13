@@ -101,7 +101,19 @@ impl P2PNode {
         self.queue_dht_put(record);
 
         // Also store locally as fallback (public IPFS nodes may reject PutRecord)
-        self.local_dht_put(key.to_vec(), value);
+        self.local_dht_put(key.to_vec(), value.clone());
+
+        // META-03: dual-publish under the Argon2id-blinded key — a crawler
+        // must spend ~20–40 ms of memory-hard work PER name to find the
+        // record, killing bulk directory scraping. The value stays signed
+        // JSON; knowing the name is required to resolve it either way.
+        if let Ok(bkey) = crate::p2p::blind_username::username_blind_key(username) {
+            let mut brec = kad::Record::new(bkey.clone(), value.clone());
+            brec.expires = Some(std::time::Instant::now() + std::time::Duration::from_secs(86400));
+            self.queue_dht_put(brec);
+            self.local_dht_put(bkey.to_vec(), value);
+        }
+
         // Keep the SIGNED record for UsernameAnnounce gossip to new peers.
         self.my_username = Some((username.to_string(), signed));
         log::debug!("Username '{}' published in DHT (and stored locally as fallback)", username);
@@ -124,7 +136,7 @@ impl P2PNode {
         let Ok(stored) = serde_json::from_slice::<DHTUserRecord>(&peer_record.record.value) else {
             return true; // garbage under the key — overwrite it
         };
-        let sig_ok = stored
+        let sig_valid = stored
             .signature
             .as_ref()
             .map(|sig| {
@@ -135,17 +147,22 @@ impl P2PNode {
                 )
             })
             .unwrap_or(false)
-            && stored.username == username
-            && !stored.revoked;
-        if !sig_ok {
+            && stored.username == username;
+        if !sig_valid {
             return true; // forged/foreign record — overwrite it
         }
         if stored.peer_id == self.peer_id.to_string() {
             return true; // our own record — refresh it
         }
-        // Valid record owned by someone else: only overwrite when ours is
-        // strictly fresher — otherwise the two owners flap forever.
-        
+        // SEC-1111-01: a live record owned by someone else cannot be
+        // overwritten regardless of our timestamp — the old LWW rule let a
+        // future-dated claim permanently squat a taken name. Only the
+        // owner's signed tombstone releases it.
+        if !stored.revoked {
+            return false;
+        }
+        // Tombstone released the name: take it only with a strictly newer
+        // record (bounded future skew is enforced at ValidatingStore).
         serde_json::from_slice::<DHTUserRecord>(our_value)
             .map(|ours| {
                 let new_ts = chrono::DateTime::parse_from_rfc3339(&ours.updated_at).ok();
@@ -194,6 +211,19 @@ impl P2PNode {
             .kademlia
             .get_record(key);
         self.pending_lookups.insert(query_id, username.to_string());
+
+        // META-03: parallel blinded-key query — new publishers write under
+        // the Argon2id key; whichever resolves first wins.
+        if let Ok(bkey) = crate::p2p::blind_username::username_blind_key(username) {
+            let qid = self.swarm
+                .behaviour_mut()
+                .kademlia
+                .get_record(bkey);
+            self.pending_blind_queries.insert(
+                qid,
+                (username.to_string(), crate::p2p::blind_lookup::BlindKind::Username, 0),
+            );
+        }
     }
 
     pub fn unpublish_username(&mut self, username: &str) -> Result<()> {

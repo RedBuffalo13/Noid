@@ -15,24 +15,36 @@ use libp2p::{Multiaddr, PeerId};
 /// a `Some(peer_id)` so failure handling can evict the dead addr and arm
 /// backoff — bare-addr dials previously produced `peer_id: None` and were
 /// retried forever.
-pub fn dial_opts(peer: Option<PeerId>, addr: Multiaddr) -> DialOpts {
+///
+/// SEC-1111-02: when the addr itself pins a `/p2p/<other>` terminal id that
+/// differs from the caller's expectation, the dial is refused (`None`) —
+/// substituting the addr's id used to connect to a foreign identity while
+/// the caller believed it dialed `peer`. A bare relay addr carries no
+/// `/p2p/` tail and keeps the caller's expectation.
+pub fn dial_opts(peer: Option<PeerId>, addr: Multiaddr) -> Option<DialOpts> {
     match peer {
         Some(peer) => {
-            // A misattributed hint (e.g. a bare relay addr that leaked into
-            // a peer's book) must not raise "Unexpected peer ID" — dial the
-            // addr's own terminal id instead of the caller's expectation.
-            let effective = crate::p2p::terminal_peer_id::terminal_peer_id(&addr)
-                .unwrap_or(peer);
-            let opts = DialOpts::peer_id(effective).addresses(vec![addr]);
+            if let Some(terminal) = crate::p2p::terminal_peer_id::terminal_peer_id(&addr) {
+                if terminal != peer {
+                    log::warn!(
+                        "Refusing dial: {} pins {} but caller expected {}",
+                        addr,
+                        terminal,
+                        peer
+                    );
+                    return None;
+                }
+            }
+            let opts = DialOpts::peer_id(peer).addresses(vec![addr]);
             #[cfg(windows)]
             let opts = opts.allocate_new_port();
-            opts.build()
+            Some(opts.build())
         }
         None => {
             let opts = DialOpts::unknown_peer_id().address(addr);
             #[cfg(windows)]
             let opts = opts.allocate_new_port();
-            opts.build()
+            Some(opts.build())
         }
     }
 }

@@ -43,4 +43,14 @@ pub struct RelayStatus {
     /// `"stun_symmetric"` | `"stun_mapped"` | `"unknown"`.
     #[serde(default)]
     pub nat_mapping: String,
+    /// RV-03: the AutoNAT probe window (60s from the first conn/candidate)
+    /// expired while status stayed `Unknown` — the UI should stop showing
+    /// "Detecting…" and report honest "unreachable inbound".
+    #[serde(default)]
+    pub probe_exhausted: bool,
+    /// RV-04: fresh per-addr evidence snapshot (canonical addr → state) —
+    /// the invite builder ranks hints by it; the UI may badge verified
+    /// addrs later.
+    #[serde(default)]
+    pub addr_evidence: std::collections::HashMap<String, crate::p2p::addr_evidence::EvidenceState>,
 }

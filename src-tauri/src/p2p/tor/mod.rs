@@ -11,5 +11,6 @@ pub mod encrypted_keystore;
 pub mod supervisor;
 pub mod transport;
 pub mod accept_loop;
+pub mod self_probe;
 #[cfg(test)]
 mod tor_keystore_test;

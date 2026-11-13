@@ -1,3 +1,4 @@
+use zeroize::Zeroize;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
@@ -26,7 +27,7 @@ pub struct AuditLog {
     /// RC24: a single writer thread drains formatted lines — callers on the
     /// async runtime never block on file IO, and ordering stays FIFO.
     writer: Mutex<Option<std::sync::mpsc::Sender<AuditMsg>>>,
-    log_path: PathBuf,
+    log_path: Mutex<PathBuf>,
 }
 
 impl AuditLog {
@@ -35,7 +36,22 @@ impl AuditLog {
         Self {
             key: Mutex::new(None),
             writer: Mutex::new(None),
-            log_path,
+            log_path: Mutex::new(log_path),
+        }
+    }
+
+    /// A1 decoy vault: point the writer at a different file (the decoy
+    /// profile keeps its own audit log, so decoy-session lines never land
+    /// in the real `audit.log` sealed under the wrong key). Flushes and
+    /// stops the current writer first — the next `log()` spawns a fresh
+    /// writer on the new path.
+    pub fn retarget(&self, path: PathBuf) {
+        let _ = self.flush();
+        if let Ok(mut guard) = self.writer.lock() {
+            guard.take();
+        }
+        if let Ok(mut p) = self.log_path.lock() {
+            *p = path;
         }
     }
 
@@ -49,7 +65,11 @@ impl AuditLog {
             return Ok(tx.clone());
         }
         let (tx, rx) = std::sync::mpsc::channel::<AuditMsg>();
-        let path = self.log_path.clone();
+        let path = self
+            .log_path
+            .lock()
+            .map_err(|_| anyhow!("audit log path mutex poisoned"))?
+            .clone();
         std::thread::Builder::new()
             .name("audit-log-writer".into())
             .spawn(move || {
@@ -98,6 +118,24 @@ impl AuditLog {
     /// Attach the PIN-derived master key; the "audit" domain subkey is
     /// derived from it (S14). All subsequent `details` payloads are
     /// encrypted at rest. Called once from the login/setup path.
+    /// SEC-1111-09: wipe barrier — flush pending lines, stop the writer
+    /// thread (dropping the channel ends its recv loop), and zeroize the
+    /// audit key BEFORE the data dir is shredded. Afterwards `log()` is a
+    /// no-op writer-side: the channel is closed.
+    pub fn shutdown_and_zeroize(&self) {
+        let _ = self.flush();
+        if let Ok(mut guard) = self.writer.lock() {
+            // Dropping the sender closes the channel; the writer thread
+            // exits its recv loop and releases the file handle (Windows).
+            guard.take();
+        }
+        if let Ok(mut k) = self.key.lock() {
+            if let Some(mut key) = k.take() {
+                key.zeroize();
+            }
+        }
+    }
+
     pub fn set_key(&self, key: [u8; 32]) {
         if let Ok(mut guard) = self.key.lock() {
             *guard = Some(crate::security::derive_domain_key(&key, "audit"));

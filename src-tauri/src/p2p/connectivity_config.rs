@@ -28,9 +28,6 @@ pub struct ConnectivityConfig {
     pub on_demand: bool,
     /// Seconds an idle contact connection lives in on-demand mode.
     pub idle_conn_ttl_secs: u64,
-    /// Ping interval for contact conns in on-demand mode (infra conns
-    /// always keep the fast 10s ping — reservations depend on it).
-    pub contact_ping_interval_secs: u64,
     /// Self-mailbox poll interval.
     pub mailbox_poll_secs: u64,
 }
@@ -40,8 +37,7 @@ impl Default for ConnectivityConfig {
         Self {
             on_demand: false,
             idle_conn_ttl_secs: 120,
-            contact_ping_interval_secs: 120,
-            mailbox_poll_secs: 120,
+            mailbox_poll_secs: 300,
         }
     }
 }
@@ -56,10 +52,9 @@ impl ConnectivityConfig {
             Ok(content) => match serde_json::from_str::<Self>(&content) {
                 Ok(cfg) => {
                     log::debug!(
-                        "Loaded connectivity config: on_demand={}, idle_ttl={}s, ping={}s, poll={}s",
+                        "Loaded connectivity config: on_demand={}, idle_ttl={}s, poll={}s",
                         cfg.on_demand,
                         cfg.idle_conn_ttl_secs,
-                        cfg.contact_ping_interval_secs,
                         cfg.mailbox_poll_secs
                     );
                     cfg
@@ -100,7 +95,7 @@ mod tests {
         let c = ConnectivityConfig::default();
         assert!(!c.on_demand);
         assert_eq!(c.idle_conn_ttl_secs, 120);
-        assert_eq!(c.mailbox_poll_secs, 120);
+        assert_eq!(c.mailbox_poll_secs, 300);
     }
 
     #[test]
@@ -110,14 +105,12 @@ mod tests {
         let c = ConnectivityConfig {
             on_demand: true,
             idle_conn_ttl_secs: 60,
-            contact_ping_interval_secs: 90,
             mailbox_poll_secs: 240,
         };
         c.save(&dir).unwrap();
         let loaded = ConnectivityConfig::load(&dir);
         assert_eq!(loaded.on_demand, true);
         assert_eq!(loaded.idle_conn_ttl_secs, 60);
-        assert_eq!(loaded.contact_ping_interval_secs, 90);
         assert_eq!(loaded.mailbox_poll_secs, 240);
         let _ = std::fs::remove_dir_all(&dir);
     }

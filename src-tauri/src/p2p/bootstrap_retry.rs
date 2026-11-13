@@ -82,9 +82,9 @@ impl P2PNode {
                 self.register_peer_addr(peer, candidate.clone(), "bootstrap-retry", true);
             }
             log::debug!("Bootstrap retry: redialing seed {} (try {})", addr, tries);
-            let _ = self
-                .swarm
-                .dial(crate::p2p::dial_opts::dial_opts(Some(peer), addr));
+            if let Some(opts) = crate::p2p::dial_opts::dial_opts(Some(peer), addr) {
+                let _ = self.swarm.dial(opts);
+            }
         }
         // D9: blind seeds (no pinned peer id) get one-shot dials that are
         // never retried. Re-dial them under the same backoff policy —
@@ -106,7 +106,9 @@ impl P2PNode {
                 .min(std::time::Duration::from_secs(60));
             self.bootstrap_retry_state.insert(key, (tries, now + delay));
             log::debug!("Bootstrap retry: blind redial {} (try {})", addr, tries);
-            let _ = self.swarm.dial(crate::p2p::dial_opts::dial_opts(None, addr));
+            if let Some(opts) = crate::p2p::dial_opts::dial_opts(None, addr) {
+                let _ = self.swarm.dial(opts);
+            }
         }
     }
 }

@@ -18,7 +18,14 @@ pub async fn send_contact_request(
         if let Some(tx) = state.p2p() {
             // Dial each address hint first — this is the cold-start path for
             // a node with an empty DHT (invite link carries reachable addrs).
+            // The invite's `?rv=` suffix rides on the LAST comma-joined addr;
+            // strip it so the hint parses as a Multiaddr instead of being
+            // silently dropped.
             for addr in addr_hints.unwrap_or_default() {
+                let addr = addr.split('?').next().unwrap_or(&addr).trim().to_string();
+                if addr.is_empty() {
+                    continue;
+                }
                 let _ = crate::send_p2p_cmd(&tx, P2PCommand::ConnectToPeer {
                         peer_id: peer_id.clone(),
                         addr_hint: Some(addr),

@@ -51,11 +51,31 @@ impl P2PNode {
         // DHT-02: local fallback BEFORE the network put — a cold-start
         // put_record that returns Err early (`?`) used to skip the local
         // store entirely and leave us without any bundle on this node.
-        self.local_dht_put(key.to_vec(), value);
+        self.local_dht_put(key.to_vec(), value.clone());
         // Tracked so a PutRecord failure can be retried — and DEFERRED when
         // Kademlia refuses synchronously (empty routing table at cold
         // start); a silent skip used to leave us unpublished forever.
         self.queue_dht_put(record);
+
+        // META-03: dual-publish the same SIGNED bundle inside a blinded
+        // 1024 B descriptor — key and value both derive from our ed25519
+        // pubkey, so only peers who already know our PeerId can even
+        // locate it. The inner bundle keeps its signature; readers verify
+        // after unwrap. This key is the ONLY descriptor copy (no legacy
+        // fallback needed — the local record already lives above).
+        if let Ok(ed_pub) = crate::p2p::blind_box::own_ed_pub(&self.identity_keypair) {
+            for day in crate::security::blind_descriptor::active_days() {
+                if let Some(blob) = crate::security::blind_descriptor::wrap_descriptor(
+                    &ed_pub, day, &value,
+                ) {
+                    let bkey = crate::security::blind_descriptor::blind_record_key(&ed_pub, day);
+                    let mut brec = kad::Record::new(bkey.clone(), blob.clone());
+                    brec.expires = Some(std::time::Instant::now() + std::time::Duration::from_secs(86400 * 2));
+                    self.queue_dht_put(brec);
+                    self.local_dht_put(bkey.to_vec(), blob);
+                }
+            }
+        }
         log::debug!("Prekey bundle published to DHT (and stored locally as fallback)");
         Ok(())
     }
@@ -87,6 +107,7 @@ impl P2PNode {
         // exists but whose DHT presence is gone — the exact failure mode
         // behind an empty routing table ("No known peers").
         if let Ok(peer) = peer_id.parse::<libp2p::PeerId>() {
+            self.seed_peer_addrs(&peer);
             let req = crate::p2p::types::NoidMessage {
                 sender: self.peer_id.to_string(),
                 content: String::new(),
@@ -115,6 +136,25 @@ impl P2PNode {
             .kademlia
             .get_record(key);
         self.pending_prekey_queries.insert(query_id, peer_id.to_string());
+
+        // META-03: parallel blinded-descriptor queries for both rotation
+        // days — new peers publish under blind keys; whichever path
+        // resolves first wins (dedup via mark_prekey_resolved).
+        if let Ok(ed_pub) = crate::security::identity_sig::pubkey_from_peer_id(peer_id)
+            .and_then(|k| k.try_into_ed25519().map(|e| e.to_bytes().to_vec()).map_err(|_| anyhow!("not ed25519")))
+        {
+            for day in crate::security::blind_descriptor::active_days() {
+                let bkey = crate::security::blind_descriptor::blind_record_key(&ed_pub, day);
+                let qid = self.swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_record(bkey);
+                self.pending_blind_queries.insert(
+                    qid,
+                    (peer_id.to_string(), crate::p2p::blind_lookup::BlindKind::Prekey, day),
+                );
+            }
+        }
     }
 
     /// X3DH-07: a verified bundle for this peer was emitted within the

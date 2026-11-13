@@ -24,6 +24,9 @@ pub struct NoidBehaviour {
     pub upnp: libp2p::swarm::behaviour::toggle::Toggle<upnp::tokio::Behaviour>,
     /// Phase B.2: Mailbox protocol for offline message delivery
     pub mailbox: request_response::json::Behaviour<MailboxRequest, MailboxResponse>,
+    /// META-05: /noid-hop/1.0.0 — onion-style request forwarding for the
+    /// 2-hop privacy relay (entry sees next-hop only, exit sees dest only).
+    pub hop: request_response::json::Behaviour<crate::p2p::hop::HopRequest, crate::p2p::hop::HopResponse>,
     /// SEC-06: hard cap on pending/established connections so a flood of
     /// inbound dials or a dial storm cannot exhaust sockets and memory.
     pub limits: libp2p::connection_limits::Behaviour,
@@ -44,6 +47,7 @@ pub enum NoidBehaviourEvent {
     Upnp(upnp::Event),
     /// Phase B.2: Mailbox protocol events
     Mailbox(request_response::Event<MailboxRequest, MailboxResponse>),
+    Hop(request_response::Event<crate::p2p::hop::HopRequest, crate::p2p::hop::HopResponse>),
     /// connection_limits emits no events — Infallible is uninhabited.
     Limits(std::convert::Infallible),
 }
@@ -117,6 +121,12 @@ impl From<upnp::Event> for NoidBehaviourEvent {
 impl From<request_response::Event<MailboxRequest, MailboxResponse>> for NoidBehaviourEvent {
     fn from(event: request_response::Event<MailboxRequest, MailboxResponse>) -> Self {
         NoidBehaviourEvent::Mailbox(event)
+    }
+}
+
+impl From<request_response::Event<crate::p2p::hop::HopRequest, crate::p2p::hop::HopResponse>> for NoidBehaviourEvent {
+    fn from(event: request_response::Event<crate::p2p::hop::HopRequest, crate::p2p::hop::HopResponse>) -> Self {
+        NoidBehaviourEvent::Hop(event)
     }
 }
 

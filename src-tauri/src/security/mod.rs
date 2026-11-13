@@ -10,6 +10,7 @@
 pub mod cipher;
 pub mod domains;
 pub mod field_cipher;
+pub mod frame_padding;
 pub mod identity_sig;
 pub mod room_crypto;
 pub mod key_store;
@@ -17,6 +18,11 @@ pub mod manager;
 pub mod x3dh;
 pub mod ratchet;
 pub mod ratchet_session;
+pub mod blind_descriptor;
+pub mod sealed_sender;
+pub mod decoy_vault;
+pub mod decoy_seeder;
+pub mod tpm_backend;
 pub mod secure_delete;
 pub mod audit_log;
 #[cfg(test)]

@@ -86,7 +86,9 @@ describe("notifications", () => {
       const s = getNotificationSettings();
       expect(s).toEqual({
         enabled: true,
-        showPreview: true,
+        // SEC-1111-11: preview is OFF by default — notification bodies
+        // must not leak message text into the OS notification database.
+        showPreview: false,
         sound: true,
         onlyMentions: false,
       });
@@ -126,10 +128,21 @@ describe("notifications", () => {
   describe("notifyChatMessage", () => {
     it("sends notification with preview by default", async () => {
       isPermissionGrantedMock.mockResolvedValue(true);
+      saveNotificationSettings({ enabled: true, showPreview: true, sound: true, onlyMentions: false });
       await notifyChatMessage("peer1234567890", "hello");
       expect(sendNotificationMock).toHaveBeenCalledWith({
         title: "Message from peer1234...",
         body: "hello",
+        sound: "default",
+      });
+    });
+
+    it("hides body by default (showPreview default is off)", async () => {
+      isPermissionGrantedMock.mockResolvedValue(true);
+      await notifyChatMessage("peer1234567890", "hello");
+      expect(sendNotificationMock).toHaveBeenCalledWith({
+        title: "Message from peer1234...",
+        body: "New message",
         sound: "default",
       });
     });
@@ -177,6 +190,7 @@ describe("notifications", () => {
   describe("notifyRoomMessage", () => {
     it("sends room message notification with sender prefix", async () => {
       isPermissionGrantedMock.mockResolvedValue(true);
+      saveNotificationSettings({ enabled: true, showPreview: true, sound: true, onlyMentions: false });
       await notifyRoomMessage("roomid123456", "senderXYZ999", "room text");
       expect(sendNotificationMock).toHaveBeenCalledWith({
         title: "Room roomid12...",

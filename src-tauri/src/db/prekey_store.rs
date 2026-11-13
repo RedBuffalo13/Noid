@@ -28,13 +28,72 @@ impl Database {
     }
 
     /// Save the signed prekey (replaces any existing one).
+    /// SEC-1111-07: rotate the SPK when the current row is older than 7
+    /// days (or predates created_at tracking). The outgoing key is kept as
+    /// 'signed_prekey_prev' for the overlap window. Returns true on rotate.
+    pub async fn rotate_signed_prekey_if_due(&self) -> Result<bool> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT created_at FROM prekeys WHERE key_type = 'signed_prekey' LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((created_at,)) = row else { return Ok(false) };
+        let due = match created_at.as_deref() {
+            // Pre-rotation rows: rotate on first check.
+            None => true,
+            Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
+                .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days() >= 7)
+                .unwrap_or(true),
+        };
+        if !due {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM prekeys WHERE key_type = 'signed_prekey_prev'")
+            .execute(&self.pool).await?;
+        sqlx::query(
+            "INSERT INTO prekeys (key_type, public_key, private_key, created_at)
+             SELECT 'signed_prekey_prev', public_key, private_key, created_at
+             FROM prekeys WHERE key_type = 'signed_prekey'",
+        )
+        .execute(&self.pool).await?;
+        sqlx::query("DELETE FROM prekeys WHERE key_type = 'signed_prekey'")
+            .execute(&self.pool).await?;
+        let secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand::rng());
+        let public = x25519_dalek::PublicKey::from(&secret);
+        self.save_signed_prekey(&public.to_bytes(), &secret.to_bytes()).await?;
+        log::info!("Signed prekey rotated (previous kept for overlap)");
+        Ok(true)
+    }
+
+    /// Current SPK plus the previous one for the rotation overlap window.
+    /// private_key is field-encrypted at rest — every row must be decrypted
+    /// before the caller turns it into a StaticSecret. A single corrupt row
+    /// is skipped with a warning rather than failing the whole handshake
+    /// while a valid sibling key exists.
+    pub async fn get_signed_prekeys_for_receive(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT public_key, private_key FROM prekeys
+             WHERE key_type IN ('signed_prekey','signed_prekey_prev') ORDER BY key_type",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (public_key, stored) in rows {
+            match self.dec_bytes(&stored) {
+                Ok(private_key) => out.push((public_key, private_key)),
+                Err(e) => log::warn!("Skipping undecryptable signed prekey row: {}", e),
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn save_signed_prekey(&self, pub_key: &[u8], priv_key: &[u8]) -> Result<()> {
         // Delete existing signed prekey first
         sqlx::query("DELETE FROM prekeys WHERE key_type = 'signed_prekey'")
             .execute(&self.pool)
             .await?;
         sqlx::query(
-            "INSERT INTO prekeys (key_type, public_key, private_key) VALUES ('signed_prekey', ?, ?)",
+            "INSERT INTO prekeys (key_type, public_key, private_key, created_at) VALUES ('signed_prekey', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         )
         .bind(pub_key)
         .bind(self.enc_bytes(priv_key)?)

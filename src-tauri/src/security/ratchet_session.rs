@@ -29,6 +29,8 @@ pub struct RatchetSessionManager {
     /// and the STALE snapshot overwrites the newer chain state, permanently
     /// desyncing the pair.
     save_locks: Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>,
+    session_installed_at: Mutex<HashMap<String, std::time::Instant>>,
+    last_accepted_ephemeral: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl RatchetSessionManager {
@@ -39,6 +41,8 @@ impl RatchetSessionManager {
             decrypt_failures: Mutex::new(HashMap::new()),
             last_rehandshake: Mutex::new(HashMap::new()),
             save_locks: Mutex::new(HashMap::new()),
+            session_installed_at: Mutex::new(HashMap::new()),
+            last_accepted_ephemeral: Mutex::new(HashMap::new()),
         }
     }
 
@@ -62,12 +66,20 @@ impl RatchetSessionManager {
             decrypt_failures: Mutex::new(HashMap::new()),
             last_rehandshake: Mutex::new(HashMap::new()),
             save_locks: Mutex::new(HashMap::new()),
+            session_installed_at: Mutex::new(HashMap::new()),
+            last_accepted_ephemeral: Mutex::new(HashMap::new()),
         })
     }
 
     /// Get our identity public key bytes for sharing with contacts
     pub async fn identity_public_bytes(&self) -> Vec<u8> {
         self.identity.lock().await.identity_public_bytes()
+    }
+
+    /// META-02: raw X3DH identity secret — needed to open sealed-sender
+    /// mailbox envelopes addressed to our identity key.
+    pub async fn identity_secret_bytes(&self) -> Vec<u8> {
+        self.identity.lock().await.identity_secret_bytes()
     }
 
     /// Phase A.2: Load or create identity from DB. Called after login when DB is available.
@@ -94,7 +106,9 @@ impl RatchetSessionManager {
         let identity = self.identity.lock().await;
         let identity_public = identity.identity_public_bytes();
 
-        // 1. Load or generate signed prekey
+        // 1. Load or generate signed prekey — rotating first when the
+        // current key aged out (SEC-1111-07: 7-day SPK lifetime).
+        let _ = db.rotate_signed_prekey_if_due().await;
         let (spk_pub, _spk_priv) = match db.get_signed_prekey().await? {
             Some((p, s)) => {
                 log::debug!("Loaded existing signed prekey from DB");
@@ -175,6 +189,13 @@ impl RatchetSessionManager {
 
         let mut sessions = self.sessions.lock().await;
         sessions.insert(peer_id.to_string(), ratchet);
+        drop(sessions);
+        self.decrypt_failures.lock().await.remove(peer_id);
+        self.last_accepted_ephemeral.lock().await.remove(peer_id);
+        self.session_installed_at
+            .lock()
+            .await
+            .insert(peer_id.to_string(), std::time::Instant::now());
 
         Ok(initial_msg)
     }
@@ -195,6 +216,15 @@ impl RatchetSessionManager {
 
         let mut sessions = self.sessions.lock().await;
         sessions.insert(peer_id.to_string(), ratchet);
+        drop(sessions);
+        self.last_accepted_ephemeral
+            .lock()
+            .await
+            .insert(peer_id.to_string(), initial_msg.ephemeral_public.clone());
+        self.session_installed_at
+            .lock()
+            .await
+            .insert(peer_id.to_string(), std::time::Instant::now());
 
         Ok(())
     }
@@ -320,6 +350,8 @@ impl RatchetSessionManager {
         self.sessions.lock().await.remove(peer_id);
         self.decrypt_failures.lock().await.remove(peer_id);
         self.save_locks.lock().await.remove(peer_id);
+        self.session_installed_at.lock().await.remove(peer_id);
+        self.last_accepted_ephemeral.lock().await.remove(peer_id);
     }
 
     /// Drop every ratchet session and the in-memory X3DH identity — used on
@@ -329,7 +361,29 @@ impl RatchetSessionManager {
         self.decrypt_failures.lock().await.clear();
         self.last_rehandshake.lock().await.clear();
         self.save_locks.lock().await.clear();
+        self.session_installed_at.lock().await.clear();
+        self.last_accepted_ephemeral.lock().await.clear();
         *self.identity.lock().await = X3DH::new();
+    }
+
+    pub async fn session_age_secs(&self, peer_id: &str) -> u64 {
+        self.session_installed_at
+            .lock()
+            .await
+            .get(peer_id)
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(u64::MAX)
+    }
+
+    pub async fn is_duplicate_init(&self, peer_id: &str, ephemeral_public: &[u8]) -> bool {
+        if !self.has_session(peer_id).await {
+            return false;
+        }
+        self.last_accepted_ephemeral
+            .lock()
+            .await
+            .get(peer_id)
+            .is_some_and(|ek| ek.as_slice() == ephemeral_public)
     }
 
     /// Persist a session state to the database. RC23: the sessions lock is
@@ -361,6 +415,10 @@ impl RatchetSessionManager {
         if let Some(state) = db.get_ratchet_state(peer_id).await? {
             let ratchet = DoubleRatchet::import_state(&state)?;
             self.sessions.lock().await.insert(peer_id.to_string(), ratchet);
+            self.session_installed_at
+                .lock()
+                .await
+                .insert(peer_id.to_string(), std::time::Instant::now());
             log::info!("Restored ratchet session for {} ({} bytes)", peer_id, state.len());
             return Ok(true);
         }

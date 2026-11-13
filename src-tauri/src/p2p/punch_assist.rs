@@ -82,7 +82,9 @@ pub fn send_punch_wave(socket: &UdpSocket, target: SocketAddr, include_fan: bool
     // 20-byte RFC 5389 STUN Binding Request header — looks like standard
     // WebRTC/ICE hole-punch traffic to carrier DPI and is harmlessly ignored
     // by `quinn` if it lands on the remote QUIC endpoint after the hole opens.
-    let pkt = libp2p_quic::stun_hook::build_binding_request(*b"NOIDPUNCH001");
+    // SEC-1111-04: fresh CSPRNG transaction id per wave — the static
+    // NOIDPUNCH001 magic was a one-line DPI signature and a replay token.
+    let pkt = libp2p_quic::stun_hook::build_binding_request(rand::random());
     let mut sent = 0;
     let ports = if include_fan {
         candidate_port_fan(target.port())

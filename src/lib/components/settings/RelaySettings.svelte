@@ -34,6 +34,8 @@
   const natMapKeys: Record<string, string> = {
     public_port_mapped: "relay.natmap.public_port_mapped",
     stun_cone: "relay.natmap.stun_cone",
+    stun_cone_eif: "relay.natmap.stun_cone_eif",
+    stun_cone_filtered: "relay.natmap.stun_cone_filtered",
     stun_symmetric: "relay.natmap.stun_symmetric",
     stun_mapped: "relay.natmap.stun_mapped",
     unknown: "relay.natmap.unknown",
@@ -148,7 +150,9 @@
         <span class="status-value" class:status-ok={status.natStatus === "public"}>
           {onionOnly
             ? t("relay.nat.onion_only")
-            : t((natKeys[status.natStatus] ?? "relay.nat.unknown") as never)}
+            : status.natStatus === "unknown" && status.probeExhausted
+              ? t("relay.nat.unreachable")
+              : t((natKeys[status.natStatus] ?? "relay.nat.unknown") as never)}
         </span>
       </div>
       {#if status.natMapping && status.natMapping !== "unknown"}

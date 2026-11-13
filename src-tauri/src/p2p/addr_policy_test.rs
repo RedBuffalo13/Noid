@@ -55,6 +55,20 @@ fn valid_circuit_is_circuit_class() {
 }
 
 #[test]
+fn onion3_is_cacheable_and_public_tier() {
+    // Regression: Onion3 was classified but excluded from is_wan_cacheable,
+    // so onion hints never survived a restart — the swarm's in-memory dial
+    // book was the only place they lived.
+    let p = PeerId::random();
+    let a = addr(&format!(
+        "/onion3/224xov7vwkourvnpje2ih43w2tdjyrhuwxq2qz53xask3x6idq22ggqd:4020/p2p/{p}"
+    ));
+    assert_eq!(classify_peer_addr(&a, &p), AddrClass::Onion3);
+    assert!(is_wan_cacheable(&a, &p));
+    assert!(crate::p2p::invite::is_public_addr(&a));
+}
+
+#[test]
 fn nested_circuit_is_malformed() {
     let relay = PeerId::random();
     let p = PeerId::random();

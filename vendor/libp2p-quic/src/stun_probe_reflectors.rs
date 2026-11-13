@@ -49,9 +49,17 @@ pub(crate) fn probe_with_reflectors(
     let _ = socket.set_read_timeout(None);
     let _ = socket.set_write_timeout(None);
     let (external_addr, nat_kind) = classify_stun_samples(&samples)?;
+    // RFC 5780 filtering probe on the first reflector that answered —
+    // a mapping alone is a claim; the filter class decides whether an
+    // unsolicited packet from a cold peer actually gets in.
+    let filter = samples
+        .first()
+        .map(|(srv, _)| super::probe_filtering(socket, *srv))
+        .unwrap_or(super::StunFilterKind::Unknown);
     Some(StunMapping {
         external_addr,
         local_port: bound_port,
         nat_kind,
+        filter,
     })
 }

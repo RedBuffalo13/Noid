@@ -24,6 +24,34 @@
   let lastSync = $state("");
   let fileInput = $state<HTMLInputElement | null>(null);
   let killPinInput = $state("");
+  let decoyPinInput = $state("");
+  let decoyConfigured = $state(false);
+
+  const loadDecoyStatus = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      decoyConfigured = await invoke<boolean>("is_decoy_configured");
+    } catch { /* leave default */ }
+  };
+  const saveDecoy = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("set_decoy_pin", { pin: decoyPinInput.trim() });
+      decoyConfigured = true;
+      decoyPinInput = "";
+      uiStore.showToast(t("settings.decoy.saved"));
+    } catch (e) { uiStore.showToast(String(e)); }
+  };
+  const removeDecoy = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("set_decoy_pin", { pin: null });
+      decoyConfigured = false;
+      decoyPinInput = "";
+      uiStore.showToast(t("settings.decoy.removed"));
+    } catch (e) { uiStore.showToast(String(e)); }
+  };
+  let autolockMin = $state(15);
   // FE-08: invites target an explicitly selected room — never the stale
   // chatStore.currentPeer left over from a previously open chat.
   let inviteRoomId = $state("");
@@ -43,6 +71,8 @@
       loadSyncTime();
       folderStore.loadFolders();
       usernameStore.loadUsername();
+      loadDecoyStatus();
+      autolockMin = Number(localStorage.getItem("noid.autolock_min") ?? "15");
     }
     if (uiStore.subPage === "create-room") {
       roomStore.loadRooms();
@@ -68,11 +98,14 @@
     }
     return contactStore.onlinePeers.has(peerId) ? "online" : "offline";
   };
-  /** Path label next to the name — every dialable path found. */
+  /** Presence label next to the name — "reachable"/"queued", never the
+   *  path itself: dialable addresses don't guarantee a live path, and
+   *  naming the transport leaks topology to a screen observer. */
   const reachLabel = (peerId: string) => {
     const r = contactStore.reachability.get(peerId);
     if (!r || r.level === "connected" || r.level === "offline") return "";
-    return r.paths.join("·") || (r.level === "mailbox" ? "mailbox" : "");
+    if (r.level === "mailbox") return t("net.queued");
+    return t("net.reachable");
   };
 
   const handleKillSwitch = async () => {
@@ -410,6 +443,27 @@
         <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
           <span style="font-size:14px;color:var(--text-secondary);">{lastSync || t("settings.never")}</span>
           <button class="num-btn special" style="min-height:44px;padding:0 12px;border-radius:10px;font-size:12px;" onclick={loadSyncTime}>{t("settings.refresh")}</button>
+        </div>
+      </div>
+      <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:16px;">
+        <div class="form-group">
+          <label class="label" for="autolock-min">{t("settings.autolock")}</label>
+          <input id="autolock-min" class="input-box" type="number" min="0" max="1440"
+            bind:value={autolockMin}
+            onchange={() => localStorage.setItem("noid.autolock_min", String(Math.max(0, Math.min(1440, autolockMin | 0))))} />
+          <p style="font-size:12px;color:var(--text-dim);margin:4px 0 0;">{t("settings.autolock_hint")}</p>
+        </div>
+      </div>
+      <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:16px;">
+        <span class="label">{t("settings.decoy.title")}</span>
+        <p style="font-size:13px;color:var(--text-secondary);margin:6px 0 12px 0;">{t("settings.decoy.desc")}</p>
+        <div style="display:flex;gap:8px;">
+          <input id="decoy-pin" type="password" class="input-box" style="flex:1;" placeholder={t("settings.decoy.placeholder")} bind:value={decoyPinInput} />
+          {#if decoyConfigured}
+            <button class="num-btn" style="height:44px;padding:0 16px;border-radius:12px;background:var(--error);color:var(--text-on-accent);font-weight:600;" onclick={removeDecoy}>{t("settings.decoy.remove")}</button>
+          {:else}
+            <button class="num-btn" style="height:44px;padding:0 16px;border-radius:12px;" onclick={saveDecoy}>{t("settings.decoy.enable")}</button>
+          {/if}
         </div>
       </div>
       <div style="margin-top:24px;border-top:1px solid var(--border-default);padding-top:16px;">

@@ -90,6 +90,16 @@ impl TorHandle {
         Err(anyhow!("embedded tor disabled (NOID_DISABLE_TOR=1)"))
     }
 
+    /// SEC-1111-05: rotate the onion identity (new `.onion`). Fails when
+    /// Tor support is disabled.
+    pub fn rotate_onion_identity(&self, master: &[u8; 32]) -> Result<String> {
+        if let Some(sup_) = &self.supervisor {
+            return sup_.rotate_identity(master);
+        }
+        let _ = master;
+        Err(anyhow!("embedded tor disabled (NOID_DISABLE_TOR=1)"))
+    }
+
     /// Live status watch — UI's `tor-status` event bridge and any
     /// subscriber that needs bootstrap/mode transitions without polling.
     pub fn status_watch(&self) -> watch::Receiver<TorStatus> {
@@ -143,9 +153,16 @@ impl TorHandle {
         cfg.onion_relay_enabled && cfg.consent_version > 0 && self.running()
     }
 
-    /// Our `/onion3/<host>:4020` listen multiaddr — `None` without identity.
+    /// Our `/onion3/<host>:4020` listen multiaddr — `None` without identity
+    /// or while the desired mode is Off (the offline identity key exists,
+    /// but nothing serves the virtual port — advertising it poisons
+    /// invites and endpoint records).
     pub fn listen_multiaddr(&self) -> Option<libp2p::Multiaddr> {
-        let addr = self.status().onion_address?;
+        let status = self.status();
+        if status.desired_mode == TorMode::Off {
+            return None;
+        }
+        let addr = status.onion_address?;
         let host = addr.strip_suffix(".onion").unwrap_or(&addr);
         format!("/onion3/{}:{}", host, super::onion_addr::ONION_VPORT).parse().ok()
     }

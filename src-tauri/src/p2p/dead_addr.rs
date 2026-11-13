@@ -38,7 +38,9 @@ impl P2PNode {
     /// Circuit addrs are never dead-marked — their liveness is owned by the
     /// relay reservation, not by our dial history.
     pub(crate) fn note_dial_failure(&mut self, addr: &Multiaddr, wrong_peer: bool) {
-        if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+        if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+            || (!wrong_peer && addr.iter().any(|p| matches!(p, Protocol::Onion3(_))))
+        {
             return;
         }
         let key = Self::canonical_dial_addr(addr).to_string();

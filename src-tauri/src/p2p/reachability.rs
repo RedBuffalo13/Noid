@@ -68,8 +68,7 @@ impl P2PNode {
             ReachLevel::Onion
         } else if self
             .mailbox_cache
-            .get(&peer_id.to_string())
-            .is_some()
+            .contains_key(&peer_id.to_string())
         {
             ReachLevel::Mailbox
         } else {

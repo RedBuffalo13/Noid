@@ -22,7 +22,7 @@ const FILE_MARKER: &str = "NOIDFILE1:";
 /// persist the chain, and build the RatchetChat envelope. When no session
 /// exists anywhere, kicks off FetchPrekeyBundle so the X3DH recovery cycle
 /// starts — the caller still pends the message for the retry tick.
-async fn wrap_ratchet_payload(
+pub(crate) async fn wrap_ratchet_payload(
     state: &AppState,
     peer_id: &str,
     plaintext: &str,

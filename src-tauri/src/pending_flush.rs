@@ -75,6 +75,20 @@ pub(crate) async fn flush_pending_for_peer(handle: &tauri::AppHandle, peer: &str
         if !sessions.has_session(peer).await {
             let _ = sessions.load_session(&db, peer).await;
         }
+        if sessions.has_session(peer).await && !sessions.can_send(peer).await {
+            if sessions.session_age_secs(peer).await < 45 {
+                log::debug!(
+                    "Bob session for {} awaiting first inbound DH ratchet — keeping pending",
+                    peer
+                );
+                continue;
+            }
+            log::info!(
+                "Orphaned half-open Bob session for {} (>45s) — re-initiating X3DH",
+                peer
+            );
+            sessions.drop_session(peer).await;
+        }
         match sessions.encrypt(peer, content.as_bytes()).await {
             Ok(Some(ratchet_msg)) => {
                 let msg = crate::p2p::NoidMessage {

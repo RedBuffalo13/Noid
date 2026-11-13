@@ -24,16 +24,26 @@ use std::time::Duration;
 /// on mobile CGNATs (Tele2 / MTS / MegaFon) and home routers.
 pub const STUN_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 
-/// Human-readable label for the NAT mapping classification.
-pub fn nat_kind_label(kind: Option<StunNatKind>, has_port_forward: bool) -> &'static str {
+/// Human-readable label for the NAT mapping+filtering classification.
+/// RV-08: a `Cone` mapping under endpoint-independent filtering is the
+/// only cold-dialable STUN case — labels keep that distinction visible.
+pub fn nat_kind_label(
+    mapping: Option<&StunMapping>,
+    has_port_forward: bool,
+) -> &'static str {
+    use libp2p_quic::stun_hook::StunFilterKind as F;
     if has_port_forward {
         return "public_port_mapped";
     }
-    match kind {
-        Some(StunNatKind::Cone) => "stun_cone",
-        Some(StunNatKind::Symmetric { .. } | StunNatKind::AddressDependent) => "stun_symmetric",
-        Some(StunNatKind::SingleSample) => "stun_mapped",
-        None => "unknown",
+    let Some(m) = mapping else {
+        return "unknown";
+    };
+    match (m.nat_kind, m.filter) {
+        (StunNatKind::Cone, F::EndpointIndependent) => "stun_cone_eif",
+        (StunNatKind::Cone, F::AddressDependent | F::PortDependent) => "stun_cone_filtered",
+        (StunNatKind::Cone, F::Unknown) => "stun_cone",
+        (StunNatKind::Symmetric { .. } | StunNatKind::AddressDependent, _) => "stun_symmetric",
+        (StunNatKind::SingleSample, _) => "stun_mapped",
     }
 }
 
@@ -158,12 +168,13 @@ mod tests {
             external_addr: got,
             local_port: 4020,
             nat_kind: StunNatKind::Cone,
+            filter: libp2p_quic::stun_hook::StunFilterKind::Unknown,
         };
         let maddr = mapping_to_quic_multiaddr(&mapping);
         assert_eq!(maddr.to_string(), "/ip4/85.140.12.34/udp/54321/quic-v1");
-        assert_eq!(nat_kind_label(Some(StunNatKind::Cone), false), "stun_cone");
+        assert_eq!(nat_kind_label(Some(&mapping), false), "stun_cone");
         assert_eq!(
-            nat_kind_label(Some(StunNatKind::Cone), true),
+            nat_kind_label(Some(&mapping), true),
             "public_port_mapped"
         );
     }

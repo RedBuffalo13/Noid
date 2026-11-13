@@ -19,6 +19,8 @@ mod classify_samples;
 mod listener_generation;
 #[path = "stun_listener_registration.rs"]
 mod listener_registration;
+#[path = "stun_filter_probe.rs"]
+mod filter_probe;
 #[path = "stun_probe_reflectors.rs"]
 mod probe_reflectors;
 #[path = "stun_register_listener.rs"]
@@ -29,6 +31,8 @@ mod socket_slot;
 mod unregister_listener;
 
 pub(crate) use classify_samples::classify_stun_samples;
+pub use filter_probe::StunFilterKind;
+pub(crate) use filter_probe::probe_filtering;
 pub use listener_generation::listener_generation;
 pub(crate) use listener_registration::ListenerSocketRegistration;
 pub(crate) use probe_reflectors::probe_with_reflectors;
@@ -69,6 +73,9 @@ pub struct StunMapping {
     pub external_addr: SocketAddr,
     pub local_port: u16,
     pub nat_kind: StunNatKind,
+    /// RFC 5780 inbound filtering class — `Unknown` when the filtering
+    /// probe never ran (refresh paths that skip it) or was inconclusive.
+    pub filter: StunFilterKind,
 }
 
 static IPV4_LISTENER_SOCKET: RwLock<Option<RegisteredListenerSocket>> = RwLock::new(None);
@@ -98,6 +105,15 @@ pub fn observed_stun_mapping() -> Option<StunMapping> {
         .as_ref()
         .filter(|(owner, _)| *owner == generation)
         .map(|(_, value)| value.clone())
+}
+
+/// Invalidate the observed mapping — called when the network changed
+/// (interface death, VPN toggle): the stored external addr belonged to the
+/// old interface and must not be re-announced while a fresh probe runs.
+pub fn invalidate_observed_mapping() {
+    if let Ok(mut observed) = OBSERVED_MAPPING.write() {
+        *observed = None;
+    }
 }
 
 /// Update the stored STUN mapping (called at socket bind and by refresh probes).

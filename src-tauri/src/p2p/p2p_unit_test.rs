@@ -33,7 +33,8 @@ fn test_load_bootstrap_reads_existing_file() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("bootstrap_nodes.json");
     let custom_config = serde_json::json!({
-        "nodes": ["/ip4/127.0.0.1/tcp/4001"]
+        "nodes": ["/ip4/127.0.0.1/tcp/4001"],
+        "allow_unpinned": true
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&custom_config).unwrap()).unwrap();
     let nodes = load_bootstrap_nodes(dir.path());
@@ -64,7 +65,8 @@ fn test_load_bootstrap_invalid_addr_skipped() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("bootstrap_nodes.json");
     let custom_config = serde_json::json!({
-        "nodes": ["invalid_multiaddr", "/ip4/127.0.0.1/tcp/4001"]
+        "nodes": ["invalid_multiaddr", "/ip4/127.0.0.1/tcp/4001"],
+        "allow_unpinned": true
     });
     std::fs::write(&config_path, serde_json::to_string_pretty(&custom_config).unwrap()).unwrap();
     let nodes = load_bootstrap_nodes(dir.path());

@@ -38,10 +38,18 @@ pub(crate) async fn handle_x3dh_init(
             return;
         }
     } else {
-        log::warn!("X3DHInit from {} has no identity signature (legacy peer)", from);
+        // SEC-1111-07: the signature is MANDATORY — an unattested identity
+        // key lets a peer pin our session under an arbitrary key. Legacy
+        // unsigned inits fail closed.
+        log::warn!("X3DHInit from {} rejected — missing identity signature", from);
+        return;
     }
 
     let sessions = app_state.ratchet_sessions.clone();
+    if sessions.is_duplicate_init(&from, ephemeral_public).await {
+        log::debug!("Ignoring duplicate X3DHInit retry from {}", from);
+        return;
+    }
 
     let initial_msg = crate::security::x3dh::InitialMessage {
         identity_public: identity_public.to_vec(),
@@ -59,10 +67,12 @@ pub(crate) async fn handle_x3dh_init(
         }
     };
 
-    // 1. Load signed prekey secret from DB
-    let (spk_priv_bytes, db_for_consume) = match db.get_signed_prekey().await {
-        Ok(Some((_, bytes))) => (bytes, db),
-        Ok(None) => {
+    // 1. Load signed prekey secret(s) from DB — current plus the previous
+    // one kept for the rotation overlap window (SEC-1111-07), so inits
+    // signed by a still-propagating bundle keep working.
+    let (spk_candidates, db_for_consume) = match db.get_signed_prekeys_for_receive().await {
+        Ok(v) if !v.is_empty() => (v, db),
+        Ok(_) => {
             log::warn!("No signed prekey found in DB — cannot complete X3DH");
             return;
         }
@@ -71,14 +81,23 @@ pub(crate) async fn handle_x3dh_init(
             return;
         }
     };
-    let spk_secret_bytes: [u8; 32] = match spk_priv_bytes.as_slice().try_into() {
-        Ok(b) => b,
-        Err(_) => {
-            log::error!("Invalid signed prekey length in DB");
-            return;
-        }
-    };
-    let spk_secret = x25519_dalek::StaticSecret::from(spk_secret_bytes);
+    // SPK candidates ordered current→previous (rotation overlap): an
+    // initiator whose bundle still advertises the pre-rotation SPK must
+    // fall back to the prev key instead of failing the handshake.
+    let spk_secrets: Vec<x25519_dalek::StaticSecret> = spk_candidates
+        .iter()
+        .filter_map(|(_, priv_bytes)| {
+            priv_bytes
+                .as_slice()
+                .try_into()
+                .ok()
+                .map(|b: &[u8; 32]| x25519_dalek::StaticSecret::from(*b))
+        })
+        .collect();
+    if spk_secrets.is_empty() {
+        log::error!("Invalid signed prekey length in DB");
+        return;
+    }
 
     // F15/CR-04: freshness BEFORE the OTPK lookup — a replayed verbatim
     // X3DHInit arriving after its OTPK was consumed must be rejected as a
@@ -90,23 +109,28 @@ pub(crate) async fn handle_x3dh_init(
     // it is still UNCONFIRMED (handshake glare — both sides initiated as
     // Alice; the inbound init wins and resolves the pair).
     let has_session = sessions.has_session(&from).await;
-    if has_session
-        && sessions.is_confirmed(&from).await
-        && !sessions.is_desynced(&from).await
-    {
-        log::warn!(
-            "X3DHInit from {} rejected — confirmed healthy session already exists (replay?)",
+    let is_confirmed = has_session && sessions.is_confirmed(&from).await;
+    let is_desynced = has_session && sessions.is_desynced(&from).await;
+    if is_confirmed && !is_desynced {
+        let fresh_otpk = match one_time_prekey_id.as_ref() {
+            Some(otpk_pub) => matches!(db_for_consume.get_one_time_prekey(otpk_pub).await, Ok(Some(_))),
+            None => false,
+        };
+        if !fresh_otpk {
+            log::warn!(
+                "X3DHInit from {} rejected — confirmed healthy session already exists (replay?)",
+                from
+            );
+            return;
+        }
+        log::info!(
+            "X3DHInit from {} carries fresh unconsumed OTPK — replacing stale confirmed session",
             from
         );
-        return;
     }
-    if has_session {
-        // NET-A08: glare — an unconfirmed Alice session meets an inbound
-        // X3DHInit. "Inbound always wins" made BOTH sides drop Alice and
-        // install Bob for different handshakes. Deterministic arbitration
-        // both peers compute identically: the lexicographically greater
-        // peer id keeps its Alice session; the smaller id yields to Bob.
-        if !sessions.is_confirmed(&from).await && !sessions.is_desynced(&from).await {
+    if has_session && !is_confirmed {
+        let active_glare = sessions.session_age_secs(&from).await < 60;
+        if active_glare {
             let my_id = app_state.my_id.lock().await.clone();
             if my_id > from {
                 log::info!(
@@ -120,8 +144,8 @@ pub(crate) async fn handle_x3dh_init(
                 from
             );
         }
-        // Desynced session or the glare loser — drop it so receive_session
-        // installs the single consistent pair.
+    }
+    if has_session {
         sessions.drop_session(&from).await;
     }
 
@@ -162,13 +186,29 @@ pub(crate) async fn handle_x3dh_init(
         None
     };
 
-    // 3. Receive session
+    // 3. Receive session — try current SPK first, then the overlap prev.
     let otpk_ref = otpk_secret.as_ref();
-    if let Err(e) = sessions
-        .receive_session(&from, &initial_msg, &spk_secret, otpk_ref)
-        .await
-    {
-        log::error!("Failed to receive X3DH session from {}: {}", from, e);
+    let mut received = false;
+    for (i, spk) in spk_secrets.iter().enumerate() {
+        match sessions
+            .receive_session(&from, &initial_msg, spk, otpk_ref)
+            .await
+        {
+            Ok(()) => {
+                if i > 0 {
+                    log::info!("X3DH from {} completed on previous SPK (rotation overlap)", from);
+                }
+                received = true;
+                break;
+            }
+            Err(e) => {
+                if i + 1 == spk_secrets.len() {
+                    log::error!("Failed to receive X3DH session from {}: {}", from, e);
+                }
+            }
+        }
+    }
+    if !received {
         return;
     }
     log::debug!("X3DH session established with {}", from);

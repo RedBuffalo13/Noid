@@ -37,9 +37,10 @@ pub async fn set_tor_relay(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     crate::gate_set(&state.p2p_start_tx, false);
     let tx = state.p2p_start_tx.clone();
-    tokio::spawn(async move {
+    let h = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         crate::gate_set(&tx, true);
     });
+    state.session_tasks.lock().await.push(h);
     Ok(state.tor.status())
 }

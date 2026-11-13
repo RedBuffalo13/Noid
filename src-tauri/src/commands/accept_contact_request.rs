@@ -62,6 +62,9 @@ pub async fn accept_contact_request(
         }
     }
 
+    // SEC-1111-05: grow the node's announce set with the new contact.
+    crate::push_contacts::push_contacts_to_node(state.inner()).await;
+
     {
         if let Some(tx) = state.p2p() {
             let _ = crate::send_p2p_cmd(&tx, P2PCommand::SendPublicKey { peer_id: peer_id.clone() }).await;

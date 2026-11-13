@@ -134,6 +134,81 @@ pub fn open(key: &[u8; 32], room_id: &str, env: &RoomEnvelope) -> Result<Vec<u8>
         .map_err(|_| anyhow!("room envelope decrypt failed"))
 }
 
+// ---------------------------------------------------------------------------
+// META-04: SealedRoomEnvelopeV2 + rotating topics.
+//
+// V1 envelopes expose `sender_peer_id` and `ts` in the clear to every
+// transit gossipsub peer. V2 puts the WHOLE envelope (sender, ts, inner
+// ciphertext, signature) inside a second AES-256-GCM layer keyed by
+// `HKDF(room_key, "noid-room-v2-seal")` — wire bytes are
+// `NRV2 || nonce || outer_ct`, indistinguishable from noise. Members
+// unwrap the outer layer and run the exact V1 checks inside, so
+// membership auth is unchanged while the gossip layer sees nothing.
+//
+// Topic rotation: `rotating_topic` = HMAC(room_key, day) — a kicked
+// member loses the key and can no longer follow the daily topic name;
+// yesterday's topic can't be replayed into today's.
+
+const V2_MAGIC: &[u8; 4] = b"NRV2";
+
+fn v2_seal_key(room_key: &[u8; 32]) -> [u8; 32] {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"noid-room-v2-seal"), room_key);
+    let mut k = [0u8; 32];
+    let _ = hk.expand(b"v2", &mut k);
+    k
+}
+
+/// Rotating gossipsub topic for a room on `day` —
+/// `noid-rt-<hex(HMAC(room_key, "noid-room-topic" || day))[:32]>`.
+pub fn rotating_topic(room_key: &[u8; 32], day: u64) -> String {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"noid-room-topic"), room_key);
+    let mut t = [0u8; 32];
+    let _ = hk.expand(&day.to_be_bytes(), &mut t);
+    format!("noid-rt-{}", hex::encode(&t[..16]))
+}
+
+/// Seal a V1 envelope inside the V2 outer layer — transit sees `NRV2 ||
+/// nonce || ct` and nothing else.
+pub fn seal_v2(
+    key: &[u8; 32],
+    room_id: &str,
+    keypair: &libp2p::identity::Keypair,
+    msg_id: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    let inner = seal(key, room_id, keypair, msg_id, plaintext)?;
+    let inner_json = serde_json::to_vec(&inner)?;
+    let mut sk = v2_seal_key(key);
+    let cipher = Aes256Gcm::new_from_slice(&sk).map_err(|e| anyhow!("v2 key: {}", e))?;
+    let mut nonce = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce);
+    let ct = cipher
+        .encrypt(&Nonce::from(nonce), inner_json.as_ref())
+        .map_err(|e| anyhow!("v2 encrypt: {}", e))?;
+    sk.zeroize();
+    let mut out = Vec::with_capacity(4 + 12 + ct.len());
+    out.extend_from_slice(V2_MAGIC);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+/// Unwrap the V2 outer seal — returns the inner `RoomEnvelope` JSON so
+/// the caller runs the standard V1 pipeline (signature + freshness +
+/// decrypt). `None` when the magic is absent, the blob is malformed, or
+/// the outer AEAD fails (non-member or tampered).
+pub fn unwrap_v2(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
+    if blob.len() < 4 + 12 + 16 || &blob[..4] != V2_MAGIC {
+        return None;
+    }
+    let mut sk = v2_seal_key(key);
+    let cipher = Aes256Gcm::new_from_slice(&sk).ok()?;
+    let nonce = Nonce::from(<[u8; 12]>::try_from(&blob[4..16]).ok()?);
+    let inner = cipher.decrypt(&nonce, &blob[16..]).ok();
+    sk.zeroize();
+    inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +250,44 @@ mod tests {
         let mut env = seal(&key.0, &room_id, &kp, "m1", b"x").unwrap();
         env.sender_peer_id = libp2p::PeerId::random().to_string();
         assert!(open(&key.0, &room_id, &env).is_err());
+    }
+
+    #[test]
+    fn v2_roundtrip_hides_envelope() {
+        let key = RoomKey::generate();
+        let room_id = key.room_id();
+        let kp = libp2p::identity::Keypair::generate_ed25519();
+        let blob = seal_v2(&key.0, &room_id, &kp, "m1", b"secret").unwrap();
+        assert!(blob.starts_with(b"NRV2"));
+        // Wire bytes expose no JSON fields — sender/ts invisible to transit.
+        assert!(!blob.windows(4).any(|w| w == b"msg_".as_slice()));
+        let inner = unwrap_v2(&key.0, &blob).unwrap();
+        let env: RoomEnvelope = serde_json::from_slice(&inner).unwrap();
+        let pt = open(&key.0, &room_id, &env).unwrap();
+        assert_eq!(pt, b"secret");
+    }
+
+    #[test]
+    fn v2_wrong_key_silent_drop() {
+        let k1 = RoomKey::generate();
+        let k2 = RoomKey::generate();
+        let kp = libp2p::identity::Keypair::generate_ed25519();
+        let blob = seal_v2(&k1.0, &k1.room_id(), &kp, "m1", b"x").unwrap();
+        assert!(unwrap_v2(&k2.0, &blob).is_none());
+        // Non-V2 input returns None, not an error.
+        assert!(unwrap_v2(&k1.0, b"{}").is_none());
+    }
+
+    #[test]
+    fn rotating_topic_derives_and_rotates() {
+        let key = RoomKey::generate();
+        let t1 = rotating_topic(&key.0, 20000);
+        let t2 = rotating_topic(&key.0, 20001);
+        assert!(t1.starts_with("noid-rt-"));
+        assert_ne!(t1, t2);
+        // Same key + day → deterministic; different key → different topic.
+        assert_eq!(t1, rotating_topic(&key.0, 20000));
+        let other = RoomKey::generate();
+        assert_ne!(t1, rotating_topic(&other.0, 20000));
     }
 }

@@ -38,4 +38,8 @@ export interface RelayStatus {
   stunAddr?: string | null;
   /** NAT mapping mode: "public_port_mapped" | "stun_cone" | "stun_symmetric" | "stun_mapped" | "unknown". */
   natMapping?: string;
+  /** AutoNAT probe window expired with no verdict — honest "unreachable". */
+  probeExhausted?: boolean;
+  /** Per-addr reachability evidence: canonical addr → state. */
+  addrEvidence?: Record<string, "verified" | "candidate" | "failed">;
 }

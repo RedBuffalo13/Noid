@@ -105,6 +105,8 @@ impl P2PNode {
                         peer_id,
                         mailbox_peer_id: rec.mailbox_peer_id,
                         relay_addr: rec.relay_addr,
+                        backup_mailbox_peer_id: rec.backup_mailbox_peer_id,
+                        backup_relay_addr: rec.backup_relay_addr,
                     },
                 )
                 .await;

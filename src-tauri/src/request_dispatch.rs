@@ -177,26 +177,56 @@ pub(crate) async fn handle_request_received(
                                     let offer_id = v.get("offer_id").and_then(|x| x.as_str()).unwrap_or("");
                                     let name = v.get("file_name").and_then(|x| x.as_str()).unwrap_or("file");
                                     let size = v.get("file_size").and_then(|x| x.as_u64()).unwrap_or(0);
-                                    let mut inbox = app_state.file_inbox.lock().await;
-                                    crate::file_inbox::register_offer(
-                                        &mut inbox,
-                                        &format!("{}:{}", from, offer_id),
-                                        name,
-                                        size,
-                                    );
-                                    safe_emit(handle, "file-offer", serde_json::json!({
-                                        "from": from,
-                                        "offer_id": offer_id,
-                                        "name": name,
-                                        "size": size,
-                                    }));
-                                    crate::android_bridge::notify_new_message(handle, from);
+                                    // SEC-1111-06: contacts only, and the
+                                    // offer parks in pending_file_offers
+                                    // until `accept_file_offer` — nothing
+                                    // enters the ingest map without consent.
+                                    let is_contact = db
+                                        .is_contact(from)
+                                        .await
+                                        .unwrap_or(false);
+                                    if is_contact && !offer_id.is_empty() {
+                                        let key = format!("{}:{}", from, offer_id);
+                                        app_state
+                                            .pending_file_offers
+                                            .lock()
+                                            .await
+                                            .insert(key, (from.to_string(), name.to_string(), size));
+                                        let _ = sqlx::query(
+                                            "INSERT OR REPLACE INTO pending_file_offers (key, sender, name, size) VALUES (?, ?, ?, ?)",
+                                        )
+                                        .bind(format!("{}:{}", from, offer_id))
+                                        .bind(from)
+                                        .bind(name)
+                                        .bind(size as i64)
+                                        .execute(&db.pool)
+                                        .await;
+                                        safe_emit(handle, "file-offer", serde_json::json!({
+                                            "from": from,
+                                            "offer_id": offer_id,
+                                            "name": name,
+                                            "size": size,
+                                        }));
+                                        crate::android_bridge::notify_new_message(handle, from);
+                                    }
                                 }
                                 Some("chunk") => {
                                     let offer_id = v.get("offer_id").and_then(|x| x.as_str()).unwrap_or("");
                                     let idx = v.get("chunk_index").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                                     let total = v.get("total_chunks").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                                     let b64 = v.get("data").and_then(|x| x.as_str()).unwrap_or("");
+                                    let key = format!("{}:{}", from, offer_id);
+                                    // SEC-1111-06: chunks ride only behind a
+                                    // consented offer — a stray chunk set
+                                    // without accept_file_offer is dropped.
+                                    let consented = app_state
+                                        .file_inbox
+                                        .lock()
+                                        .await
+                                        .get(&key)
+                                        .map(|e| e.has_offer)
+                                        .unwrap_or(false);
+                                    if consented {
                                     if let Ok(chunk) = base64::Engine::decode(
                                         &base64::engine::general_purpose::STANDARD, b64,
                                     ) {
@@ -226,7 +256,64 @@ pub(crate) async fn handle_request_received(
                                             send_file_ack(handle, from, offer_id).await;
                                         }
                                     }
+                                    }
                                 }
+                                _ => {}
+                            }
+                        }
+                        return Some("OK");
+                    }
+
+                    // META-01: receipts and typing indicators travel inside
+                    // the ratchet payload (NOIDMETA1:) — same padded frame as
+                    // chat, indistinguishable on the wire.
+                    if let Some(meta_json) = plaintext.strip_prefix("NOIDMETA1:") {
+                        let _ = app_state.ratchet_sessions.save_session(db, from).await;
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(meta_json) {
+                            match v.get("kind").and_then(|k| k.as_str()) {
+                                Some("read") => {
+                                    let mid = v
+                                        .get("message_id")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("");
+                                    if !mid.is_empty() {
+                                        safe_emit(handle, "message-read", serde_json::json!({
+                                            "from": from,
+                                            "message_id": mid,
+                                        }));
+                                    }
+                                }
+                                Some("typing") => {
+                                    safe_emit(handle, "typing-indicator", from);
+                                }
+                                // META-02: sealed-envelope e2e delivery
+                                // receipt — echo of the ref id we sealed
+                                // into the blind mailbox item. Deduped in
+                                // DB (migration 023) so a replayed receipt
+                                // can't spam the UI.
+                                Some("delivered") => {
+                                    let rid = v
+                                        .get("ref_id")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("");
+                                    if !rid.is_empty() && rid.len() <= 64 {
+                                        let db_state = app_state.db.lock().await;
+                                        let fresh = match db_state.as_ref() {
+                                            Some(db) => db
+                                                .record_delivery_receipt(rid, from)
+                                                .await
+                                                .unwrap_or(false),
+                                            None => false,
+                                        };
+                                        if fresh {
+                                            safe_emit(handle, "message-delivered", serde_json::json!({
+                                                "from": from,
+                                                "message_id": rid,
+                                            }));
+                                        }
+                                    }
+                                }
+                                Some("chaff") => {}
                                 _ => {}
                             }
                         }
@@ -591,76 +678,16 @@ pub(crate) async fn handle_request_received(
             crate::room_control::apply_room_chat(handle, room_id, envelope).await;
             Some("OK")
         }
-        // TI-15: the send path exists but receivers used to drop offers
-        // and chunks into the catch-all. `data.content` is JSON — offers
-        // carry `file_name`/`file_size`, chunks carry `chunk_index`/`data`
-        // (base64). Complete transfers land under <app_data>/received/.
-        MessageType::FileOffer { name, size, id } => {
-            let meta: serde_json::Value = match serde_json::from_str(&data.content) {
-                Ok(v) => v,
-                Err(_) => return Some("OK"),
-            };
-            if let (Some(idx), Some(total), Some(b64)) = (
-                meta.get("chunk_index").and_then(|v| v.as_u64()),
-                meta.get("total_chunks").and_then(|v| v.as_u64()),
-                meta.get("data").and_then(|v| v.as_str()),
-            ) {
-                let offer_id = meta.get("offer_id").and_then(|v| v.as_str()).unwrap_or(id);
-                let chunk = match base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD, b64,
-                ) {
-                    Ok(c) => c,
-                    Err(_) => return Some("OK"),
-                };
-                let out_dir = handle
-                    .path()
-                    .app_data_dir()
-                    .map(|d| d.join("received"))
-                    .unwrap_or_else(|_| std::path::PathBuf::from("received"));
-                let key = format!("{}:{}", from, offer_id);
-                let done = {
-                    let app_state = handle.state::<AppState>();
-                    let mut inbox = app_state.file_inbox.lock().await;
-                    crate::file_inbox::ingest_chunk(
-                        &mut inbox,
-                        &key,
-                        idx as u32,
-                        total as u32,
-                        &chunk,
-                        &out_dir,
-                    )
-                };
-                if let Some(path) = done {
-                    log::info!("File transfer {} from {} complete → {}", offer_id, from, path.display());
-                    safe_emit(handle, "file-received", serde_json::json!({
-                        "from": from,
-                        "offer_id": offer_id,
-                        "path": path.to_string_lossy(),
-                    }));
-                    send_file_ack(handle, from, offer_id).await;
-                }
-                Some("OK")
-            } else {
-                let offer_id = meta
-                    .get("offer_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(id)
-                    .to_string();
-                let app_state = handle.state::<AppState>();
-                let accepted = {
-                    let mut inbox = app_state.file_inbox.lock().await;
-                    crate::file_inbox::register_offer(&mut inbox, &format!("{}:{}", from, offer_id), name, *size)
-                };
-                if accepted {
-                    safe_emit(handle, "file-offer", serde_json::json!({
-                        "from": from,
-                        "offer_id": &offer_id,
-                        "name": name,
-                        "size": size,
-                    }));
-                }
-                Some("OK")
-            }
+        // SEC-1111-06: the plaintext FileOffer wire path is REMOVED —
+        // offers/chunks ride only inside ratchet-encrypted NOIDFILE1
+        // payloads (contacts only + explicit consent). Legacy plaintext
+        // frames fail closed with no disk writes.
+        MessageType::FileOffer { .. } => {
+            log::warn!(
+                "Refusing plaintext FileOffer from {} — files are E2EE-only",
+                from
+            );
+            Some("REJECTED")
         }
         // TI-2: unhandled types (file-transfer chunks, future variants) must
         // NOT fan out to `p2p-request` — the frontend treats that event as

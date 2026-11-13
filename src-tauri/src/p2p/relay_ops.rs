@@ -446,7 +446,7 @@ impl P2PNode {
             .as_ref()
             .map(|m| crate::p2p::stun_keepalive::mapping_to_quic_multiaddr(m).to_string());
         let nat_mapping = crate::p2p::stun_keepalive::nat_kind_label(
-            stun.as_ref().map(|m| m.nat_kind),
+            stun.as_ref(),
             self.nat_status == NatStatus::Public,
         )
         .to_string();
@@ -469,6 +469,8 @@ impl P2PNode {
             peers_connected: self.swarm.connected_peers().count(),
             stun_addr,
             nat_mapping,
+            probe_exhausted: self.nat_probe_exhausted,
+            addr_evidence: self.addr_evidence.snapshot(),
         }
     }
 }

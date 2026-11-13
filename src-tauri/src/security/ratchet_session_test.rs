@@ -147,3 +147,35 @@ async fn test_load_session_nonexistent() {
     let loaded = mgr.load_session(&db, "nonexistent").await.unwrap();
     assert!(!loaded);
 }
+
+#[tokio::test]
+async fn test_duplicate_init_and_reinit_resets_desync() {
+    let (db_alice, _dir_a) = setup_test_db().await.unwrap();
+    let (db_bob, _dir_b) = setup_test_db().await.unwrap();
+
+    let alice = RatchetSessionManager::init_from_db(&db_alice).await.unwrap();
+    let bob = RatchetSessionManager::init_from_db(&db_bob).await.unwrap();
+
+    let mut bundle = bob.generate_and_store_prekeys(&db_bob).await.unwrap();
+    bundle.one_time_prekey_public = None;
+    bundle.one_time_prekeys.clear();
+    let (_spk_pub, spk_priv) = db_bob.get_signed_prekey().await.unwrap().unwrap();
+    let spk_secret_bytes: [u8; 32] = spk_priv.as_slice().try_into().unwrap();
+    let bob_spk_secret = StaticSecret::from(spk_secret_bytes);
+
+    for _ in 0..3 {
+        alice.record_decrypt_failure("bob").await;
+    }
+    assert!(alice.is_desynced("bob").await);
+
+    let initial_msg = alice.initiate_session("bob", &bundle).await.unwrap();
+    assert!(!alice.is_desynced("bob").await);
+    assert!(alice.session_age_secs("bob").await < 5);
+
+    bob.receive_session("alice", &initial_msg, &bob_spk_secret, None).await.unwrap();
+    assert!(bob.is_duplicate_init("alice", &initial_msg.ephemeral_public).await);
+    assert!(!bob.is_duplicate_init("alice", &[7u8; 32]).await);
+
+    bob.clear_all().await;
+    assert!(!bob.is_duplicate_init("alice", &initial_msg.ephemeral_public).await);
+}

@@ -14,8 +14,44 @@ impl P2PNode {
         };
         self.room_keys.insert(room_id.to_string(), key);
         let topic = libp2p::gossipsub::IdentTopic::new(Self::room_topic(room_id));
-        self.swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+        let _ = self.swarm.behaviour_mut().gossipsub.subscribe(&topic);
+        self.subscribe_rotating(room_id);
         Ok(())
+    }
+
+    /// META-04: (re)build rotating-topic subscriptions for `room_id` —
+    /// today + yesterday so a straddling member keeps receiving at the
+    /// rotation boundary. Cheap to call repeatedly: re-subscribing an
+    /// existing topic is a no-op.
+    pub(crate) fn subscribe_rotating(&mut self, room_id: &str) {
+        let Some(key) = self.room_keys.get(room_id).copied() else {
+            return;
+        };
+        let day = crate::p2p::blind_box::current_day();
+        for d in [day, day.saturating_sub(1)] {
+            let t = crate::security::room_crypto::rotating_topic(&key, d);
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .gossipsub
+                .subscribe(&libp2p::gossipsub::IdentTopic::new(&t));
+            self.room_topics.insert(t, room_id.to_string());
+        }
+        self.room_topics_day = day;
+    }
+
+    /// META-04: called on a periodic tick — when the day rolls over,
+    /// rebuild rotating subscriptions for every joined room and drop the
+    /// stale day-1 mapping.
+    pub fn refresh_rotating_topics(&mut self) {
+        if self.room_topics_day == crate::p2p::blind_box::current_day() {
+            return;
+        }
+        self.room_topics
+            .retain(|_, rid| self.room_keys.contains_key(rid));
+        for room_id in self.room_keys.keys().cloned().collect::<Vec<_>>() {
+            self.subscribe_rotating(&room_id);
+        }
     }
 
     /// Publish a sealed, signed `RoomEnvelope` — plaintext never reaches
@@ -33,7 +69,7 @@ impl P2PNode {
     /// fans the envelope out to members directly), and return the
     /// serialized envelope bytes for `MessageType::RoomChat` fan-out.
     pub fn send_room_chat_envelope(&mut self, room_id: &str, content: &str) -> Result<Vec<u8>> {
-        let key = self
+        let key = *self
             .room_keys
             .get(room_id)
             .ok_or_else(|| anyhow::anyhow!("not a member of room {}", room_id))?;
@@ -41,8 +77,9 @@ impl P2PNode {
             content: content.to_string(),
         })?;
         let msg_id = uuid::Uuid::new_v4().to_string();
+        self.publish_v2(room_id, &msg_id, &plaintext);
         let env = crate::security::room_crypto::seal(
-            key,
+            &key,
             room_id,
             &self.identity_keypair,
             &msg_id,
@@ -56,6 +93,32 @@ impl P2PNode {
         Ok(data)
     }
 
+    /// META-04: publish the same payload as a `NRV2` sealed blob to
+    /// today's rotating topic. Same `msg_id` as the V1 envelope →
+    /// members subscribed to both dedup. Best-effort only.
+    fn publish_v2(&mut self, room_id: &str, msg_id: &str, plaintext: &[u8]) {
+        let Some(key) = self.room_keys.get(room_id).copied() else {
+            return;
+        };
+        self.subscribe_rotating(room_id);
+        let Ok(blob) = crate::security::room_crypto::seal_v2(
+            &key,
+            room_id,
+            &self.identity_keypair,
+            msg_id,
+            plaintext,
+        ) else {
+            return;
+        };
+        let topic = libp2p::gossipsub::IdentTopic::new(
+            crate::security::room_crypto::rotating_topic(
+                &key,
+                crate::p2p::blind_box::current_day(),
+            ),
+        );
+        let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, blob);
+    }
+
     /// Publish an arbitrary room payload as a sealed, signed envelope.
     /// Payloads carrying a data-URL avatar can exceed the gossipsub
     /// transmit limit — on `MessageTooLarge` we re-seal the payload with
@@ -65,7 +128,7 @@ impl P2PNode {
         room_id: &str,
         payload: &crate::p2p::RoomPayload,
     ) -> Result<()> {
-        let key = self
+        let key = *self
             .room_keys
             .get(room_id)
             .ok_or_else(|| anyhow::anyhow!("not a member of room {}", room_id))?;
@@ -77,8 +140,9 @@ impl P2PNode {
         {
             let plaintext = serde_json::to_vec(&candidate)?;
             let msg_id = uuid::Uuid::new_v4().to_string();
+            self.publish_v2(room_id, &msg_id, &plaintext);
             let env = crate::security::room_crypto::seal(
-                key,
+                &key,
                 room_id,
                 &self.identity_keypair,
                 &msg_id,
@@ -120,9 +184,25 @@ impl P2PNode {
 
     /// Unsubscribe from a room topic and drop its key material.
     pub fn leave_room(&mut self, room_id: &str) {
-        self.room_keys.remove(room_id);
+        if let Some(mut k) = self.room_keys.remove(room_id) {
+            use zeroize::Zeroize;
+            k.zeroize();
+        }
         let topic = libp2p::gossipsub::IdentTopic::new(Self::room_topic(room_id));
         let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
+        // META-04: rotating subscriptions die with the key.
+        self.room_topics.retain(|t, rid| {
+            if rid == room_id {
+                let _ = self
+                    .swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .unsubscribe(&libp2p::gossipsub::IdentTopic::new(t));
+                false
+            } else {
+                true
+            }
+        });
     }
 
     /// Gossipsub topic name — derived from the room id, so topic names never

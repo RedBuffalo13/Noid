@@ -78,6 +78,13 @@ pub struct SignedMailboxRecord {
     /// ordering to a timestamped record of the same owner.
     #[serde(default)]
     pub published_at: Option<String>,
+    /// META-02 k=2: optional second mailbox the owner replicates envelopes
+    /// onto — senders store to every listed node so a single mailbox
+    /// failure or blackhole cannot lose offline mail.
+    #[serde(default)]
+    pub backup_mailbox_peer_id: Option<String>,
+    #[serde(default)]
+    pub backup_relay_addr: Option<String>,
     /// Ed25519 signature by `owner_peer_id` over the other fields.
     pub signature: Vec<u8>,
 }
@@ -93,6 +100,14 @@ pub fn mailbox_record_signing_payload(rec: &SignedMailboxRecord) -> Vec<u8> {
     v.extend_from_slice(rec.relay_addr.as_bytes());
     if let Some(ts) = &rec.published_at {
         v.extend_from_slice(ts.as_bytes());
+    }
+    // META-02: the backup mailbox is signed too — an unsigned field could
+    // be rewritten by a DHT peer to blackhole the replica copy.
+    if let Some(b) = &rec.backup_mailbox_peer_id {
+        v.extend_from_slice(b.as_bytes());
+    }
+    if let Some(b) = &rec.backup_relay_addr {
+        v.extend_from_slice(b.as_bytes());
     }
     v
 }
@@ -344,6 +359,10 @@ pub enum P2PEvent {
         peer_id: String,        // чей mailbox
         mailbox_peer_id: String, // кто хранит
         relay_addr: String,
+        /// META-02 k=2: signed backup mailbox from the same record —
+        /// senders replicate envelopes onto it when present.
+        backup_mailbox_peer_id: Option<String>,
+        backup_relay_addr: Option<String>,
     },
     /// D18: mailbox record lookup for a peer resolved with no usable node —
     /// pending rows stay queued until the next retry tick. Lets the app
@@ -356,6 +375,13 @@ pub enum P2PEvent {
     /// carries them, so a separate `nat-status` event was a dead duplicate.
     RelayStatusChanged {
         status: crate::p2p::relay_status::RelayStatus,
+    },
+    /// SEC-1111-02: a pinned trust anchor failed verification (bootstrap
+    /// seed answering with an unexpected PeerId). The app layer writes this
+    /// to the audit log and surfaces a one-shot UI warning.
+    SecurityAlert {
+        code: String,
+        detail: String,
     },
     /// A verified, decrypted room message (signature + AES-GCM open OK).
     RoomMessage {
@@ -396,6 +422,9 @@ pub enum P2PCommand {
     /// Dial a raw multiaddr (invite/bootstrap entry). If the addr carries a
     /// `/p2p/<peer>` component it is also seeded into the Kademlia table.
     DialAddress {
+        /// SEC-1111-03: one-time rendezvous secret carried by the invite —
+        /// our CGNAT announce lands at `H(rv)`, not `H(peer_id)`.
+        rv: Option<String>,
         addr: String,
     },
     /// Seed a known addr for a peer (e.g. `relay_addr` learned from a
@@ -410,6 +439,11 @@ pub enum P2PCommand {
     SetConnectivityConfig {
         config: crate::p2p::connectivity_config::ConnectivityConfig,
     },
+    /// META-05: pin/clear the 2-hop relay chain `[entry, exit]` on the
+    /// live node — new sends route through the chain immediately.
+    SetHopRelays {
+        relays: Vec<String>,
+    },
     SendPublicKey {
         peer_id: String,
     },
@@ -422,6 +456,18 @@ pub enum P2PCommand {
         message_id: String,
         /// Wire response status — "OK" | "DUPLICATE".
         status: String,
+    },
+    /// SEC-1111-03: rotate OUR rendezvous slot — issued when a fresh
+    /// invite is generated; the node polls `H(secret)` instead of
+    /// `H(peer_id)` so the public identity never names the slot.
+    SetRendezvousSecret {
+        secret: String,
+    },
+    /// SEC-1111-05: push the confirmed-contact set into the live node —
+    /// identity material (username announce, signed endpoint records) is
+    /// fanned out only to these peers.
+    SetContacts {
+        peer_ids: Vec<String>,
     },
     /// Subscribe to a room topic. `room_key` is the decrypted AES-256 room
     /// key — membership is proven by key possession, and the node signs every
@@ -504,6 +550,33 @@ pub enum P2PCommand {
         mailbox_peer_id: String,
         message_id: String,
     },
+    /// META-02: store a sealed-sender envelope in a blind box. `pow_nonce`
+    /// is pre-solved by the caller (the command path must not block the
+    /// event loop on ~260k hashes).
+    SendToMailboxBlind {
+        mailbox_peer_id: String,
+        box_id: String,
+        sealed: Vec<u8>,
+        pow_nonce: u64,
+        client_msg_id: Option<String>,
+        /// Local bookkeeping only — the pending-ack map keys on the real
+        /// recipient; the mailbox request itself carries just `box_id`.
+        recipient_peer_id: String,
+    },
+    /// META-02: poll our own blind box for the rotation-window `days`
+    /// (today and yesterday). The requests are signed by the node's
+    /// identity key but ride an ephemeral one-shot connection — the
+    /// mailbox never sees our stable transport PeerId (A2).
+    RetrieveFromMailboxBlind {
+        mailbox_peer_id: String,
+        days: Vec<u64>,
+    },
+    /// META-02: acknowledge+delete one sealed item from our blind box.
+    /// The node derives the box id itself for both rotation-window days.
+    AckMailboxBlind {
+        mailbox_peer_id: String,
+        message_id: String,
+    },
     /// Phase B.3: Publish our mailbox node in DHT
     RegisterAsMailbox {
         peer_id: String,         // owner — чей mailbox
@@ -577,6 +650,31 @@ pub enum MailboxRequest {
     /// Acknowledge and delete a specific message
     Delete {
         message_id: String,
+    },
+    /// META-02: sealed-sender store — the mailbox sees only an opaque
+    /// daily-rotating box id, a fixed 4096-byte ECIES blob and a
+    /// proof-of-work; no sender identity is revealed at all.
+    StoreBlind {
+        box_id: String,
+        sealed: Vec<u8>,
+        pow_nonce: u64,
+    },
+    /// META-02: retrieve a blind box. Ownership is proven by an Ed25519
+    /// signature over `retrieve_signing_payload`; the mailbox re-derives
+    /// `box_id` from `pub_key` + `day` and rejects mismatches.
+    RetrieveBlind {
+        box_id: String,
+        pub_key: Vec<u8>,
+        day: u64,
+        signature: Vec<u8>,
+    },
+    /// META-02: delete one item from a blind box (same ownership proof).
+    DeleteBlind {
+        box_id: String,
+        message_id: String,
+        pub_key: Vec<u8>,
+        day: u64,
+        signature: Vec<u8>,
     },
 }
 

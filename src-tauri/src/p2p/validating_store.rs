@@ -26,6 +26,17 @@ fn key_for(prefix: &str, id: &str) -> Vec<u8> {
 /// Does `record` carry a well-formed, owner-signed noid record under the
 /// correct key? Anything else is refused by the store.
 fn is_valid_noid_record(record: &Record) -> bool {
+    // META-03: a blinded descriptor is an opaque fixed-size AES-GCM blob —
+    // the store cannot verify ownership without the owner's pubkey (that's
+    // the point: the key reveals nothing). It is admitted on size alone;
+    // the inner signed record is verified by the reader after unwrap, so
+    // forged descriptors fail closed downstream, and the fixed 1 KiB bound
+    // keeps spam cost low.
+    if record.value.len() == crate::security::blind_descriptor::DESCRIPTOR_BYTES
+        && serde_json::from_slice::<serde_json::Value>(&record.value).is_err()
+    {
+        return true;
+    }
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(&record.value) else {
         return false;
     };
@@ -34,6 +45,13 @@ fn is_valid_noid_record(record: &Record) -> bool {
     if v.get("mailbox_peer_id").is_some() && v.get("owner_peer_id").is_some() {
         if let Ok(rec) = serde_json::from_slice::<crate::p2p::types::SignedMailboxRecord>(&record.value) {
             if key_for("noid:mailbox:", &rec.owner_peer_id) != record.key.as_ref() {
+                return false;
+            }
+            // SEC-1111-01: far-future published_at would out-live every
+            // honest republish under the key.
+            if !crate::p2p::validate_record_timestamp::record_timestamp_acceptable(
+                rec.published_at.as_deref(),
+            ) {
                 return false;
             }
             return crate::security::identity_sig::verify_payload(
@@ -54,7 +72,19 @@ fn is_valid_noid_record(record: &Record) -> bool {
         && (v.get("updatedAt").is_some() || v.get("updated_at").is_some())
     {
         if let Ok(rec) = serde_json::from_slice::<crate::p2p::types::DHTUserRecord>(&record.value) {
-            if key_for("noid:username:", &rec.username) != record.key.as_ref() {
+            // META-03: the record may live under the legacy key or the
+            // Argon2id-blinded key — either must recompute to `record.key`.
+            let legacy_ok = key_for("noid:username:", &rec.username) == record.key.as_ref();
+            let blind_ok = crate::p2p::blind_username::username_blind_key(&rec.username)
+                .map(|k| k.as_ref() == record.key.as_ref())
+                .unwrap_or(false);
+            if !legacy_ok && !blind_ok {
+                return false;
+            }
+            // SEC-1111-01: a signed record dated 2099 must not lock the name.
+            if !crate::p2p::validate_record_timestamp::record_timestamp_acceptable(
+                Some(&rec.updated_at),
+            ) {
                 return false;
             }
             let sig_ok = rec
@@ -80,6 +110,12 @@ fn is_valid_noid_record(record: &Record) -> bool {
                 return false;
             };
             if key_for("noid:prekeys:", &owner) != record.key.as_ref() {
+                return false;
+            }
+            // SEC-1111-01: far-future generated_at freezes the bundle slot.
+            if !crate::p2p::validate_record_timestamp::record_timestamp_acceptable(
+                bundle.generated_at.as_deref(),
+            ) {
                 return false;
             }
             return crate::security::x3dh::verify_prekey_bundle(&bundle);
@@ -188,7 +224,18 @@ impl RecordStore for ValidatingStore {
             } else if let Ok(rec) =
                 serde_json::from_slice::<crate::p2p::types::DHTUserRecord>(&r.value)
             {
-                crate::p2p::types::user_record_is_fresher(&stored.value, &rec)
+                // SEC-1111-01: freshness alone is not enough — a live record
+                // keeps its owner; only a revoked tombstone releases the
+                // name to a different peer_id.
+                match serde_json::from_slice::<crate::p2p::types::DHTUserRecord>(&stored.value)
+                {
+                    Ok(stored_rec) => {
+                        crate::p2p::can_replace_user_record::can_replace_user_record(
+                            &stored_rec, &rec,
+                        )
+                    }
+                    Err(_) => true,
+                }
             } else if let Ok(bundle) =
                 serde_json::from_slice::<crate::security::PrekeyBundle>(&r.value)
             {

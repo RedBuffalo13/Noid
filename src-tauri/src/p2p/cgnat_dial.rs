@@ -26,27 +26,48 @@ impl P2PNode {
         addr: &Multiaddr,
         rv_tx: &mpsc::Sender<Vec<SocketAddr>>,
     ) {
+        // SEC-1111-03: UDP punches and Mainline-DHT announces ride the
+        // direct path only — under RelayedOnly/proxy/tor_only they would
+        // leak the real IP exactly when the user opted out of it.
+        if !self.direct_net_allowed() {
+            return;
+        }
         if let Some(sa) = crate::p2p::punch_assist::extract_wan_socket_addr(addr) {
             crate::p2p::punch_assist::spawn_udp_punch_burst(sa, true);
         }
 
-        if self.relay_config.privacy != crate::p2p::relay_config::PrivacyMode::Direct {
-            return;
-        }
-        let (Some(target), Some(mapping)) = (
+        let (Some(target_peer), Some(mapping)) = (
             crate::p2p::terminal_peer_id::terminal_peer_id(addr),
             libp2p_quic::stun_hook::observed_stun_mapping(),
         ) else {
             return;
         };
-        let target = target.to_string();
+        // Announce slots: the invite's one-time rv slot when present (the
+        // public PeerId never names a slot), plus the contact's persistent
+        // daily rv-v2 slot when their public key is known — the latter is
+        // what re-finds a contact after restarts without a new invite.
+        let mut slots: Vec<String> = vec![self
+            .pending_rv
+            .get(&target_peer)
+            .cloned()
+            .unwrap_or_else(|| target_peer.to_string())];
+        if let Some(pk) = self.peer_pubkeys.get(&target_peer) {
+            slots.push(crate::p2p::cgnat_rendezvous::daily_slot_label(pk));
+        }
         let my_id = self.peer_id.to_string();
         let my_port = mapping.external_addr.port();
         let tx = rv_tx.clone();
         tokio::task::spawn_blocking(move || {
-            let peers = crate::p2p::cgnat_rendezvous::announce_and_poll_rendezvous(
-                &target, &my_id, my_port,
-            );
+            let mut peers = Vec::new();
+            for slot in slots {
+                for p in crate::p2p::cgnat_rendezvous::announce_and_poll_rendezvous(
+                    &slot, &my_id, my_port,
+                ) {
+                    if !peers.contains(&p) {
+                        peers.push(p);
+                    }
+                }
+            }
             let _ = tx.try_send(peers);
         });
     }

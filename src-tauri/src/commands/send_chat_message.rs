@@ -79,6 +79,14 @@ async fn encrypt_for_wire(peer_id: &str, content: &str, state: &State<'_, AppSta
         return WirePrepared::NoSession;
     }
     if !state.ratchet_sessions.can_send(peer_id).await {
+        if state.ratchet_sessions.session_age_secs(peer_id).await >= 45 {
+            log::info!(
+                "Orphaned half-open Bob session for {} (>45s) on send — re-initiating X3DH",
+                peer_id
+            );
+            state.ratchet_sessions.drop_session(peer_id).await;
+            return WirePrepared::NoSession;
+        }
         // NET-A01: Bob-side session waiting on the peer's first DH
         // ratchet — queue instead of emitting a public-derivable key or
         // starting a redundant handshake.

@@ -16,21 +16,38 @@ use tor_proto::stream::IncomingStreamRequest;
 
 use super::onion_addr::ONION_VPORT;
 
+/// Hot-swappable inbound destination: the node's `TorTransport` sender is
+/// replaced by `wire_inbound` whenever a new P2PNode generation starts
+/// (re-login after `lock_now`, transport rebuild) WITHOUT restarting the
+/// Tor generation — so the accept loop survives node restarts and never
+/// drops inbound streams into a dead channel.
+pub type InboundSlot =
+    std::sync::Arc<std::sync::Mutex<Option<mpsc::Sender<DataStream>>>>;
+
 /// Spawn the accept task. Returns the JoinHandle so the supervisor owns it
 /// inside the generation (shutdown barrier covers it).
 pub fn spawn_accept_loop(
     rend: impl Stream<Item = RendRequest> + Send + Unpin + 'static,
-    tx: mpsc::Sender<DataStream>,
+    slot: InboundSlot,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(accept_loop(rend, tx))
+    tokio::spawn(accept_loop(rend, slot))
 }
 
 async fn accept_loop(
     mut rend: impl Stream<Item = RendRequest> + Send + Unpin,
-    tx: mpsc::Sender<DataStream>,
+    slot: InboundSlot,
 ) {
     while let Some(request) = rend.next().await {
-        let mut tx = tx.clone();
+        // Resolve the current transport sender per rendezvous — the slot
+        // may hold a sender whose receiver died with the last node, or
+        // be empty between node generations.
+        let tx = slot
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        let Some(mut tx) = tx else {
+            continue; // no live transport right now — drop the rendezvous
+        };
         tokio::spawn(async move {
             // accept() returns the StreamRequest stream — it must outlive the
             // exchange or the tunnel dies (probe finding, live 56.44s test).

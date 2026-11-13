@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { getTorStatus, setTorMode, setTorRelay, type TorMode, type TorStatus } from "#lib/services/tor_service";
   import { torStatusStore } from "#lib/stores/tor_status_store.svelte";
   import { t } from "#lib/i18n/index.svelte";
@@ -9,6 +10,7 @@
   let relayEnabled = $state(false);
   let allowMetered = $state(false);
   let consentAccepted = $state(false);
+  let bridgesText = $state("");
   let busy = $state(false);
   let error = $state("");
   let saved = $state(false);
@@ -33,6 +35,8 @@
         // reflect it, so re-saving the unchanged mode carries the existing
         // consent instead of silently sending 0 (revocation).
         consentAccepted = status.desired_mode !== "off";
+        const lines = await invoke<string[]>("get_tor_bridges").catch(() => [] as string[]);
+        bridgesText = lines.join("\n");
       }
     } catch (e) {
       error = String(e);
@@ -71,6 +75,35 @@
     error = "";
     try {
       status = await setTorRelay(relayEnabled, allowMetered);
+      saved = true;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveBridges() {
+    busy = true;
+    error = "";
+    try {
+      const lines = bridgesText.split("\n").map((l) => l.trim()).filter(Boolean);
+      status = await invoke<TorStatus>("set_tor_bridges", { lines });
+      saved = true;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rotateOnion() {
+    busy = true;
+    error = "";
+    try {
+      const addr = await invoke<string>("rotate_onion_identity");
+      status = await getTorStatus();
+      if (status && !status.onion_address) status.onion_address = addr;
       saved = true;
     } catch (e) {
       error = String(e);
@@ -123,7 +156,22 @@
       <p style="font-size:11px;color:var(--text-dim);margin:0;word-break:break-all;">
         {t("tor.onion")}: {status.onion_address}
       </p>
+      <button class="btn" onclick={rotateOnion} disabled={busy}>
+        {t("tor.rotate_onion")}
+      </button>
+      <p style="font-size:11px;color:var(--text-dim);margin:0;">{t("tor.rotate_onion_hint")}</p>
     {/if}
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;" />
+
+    <span class="label">{t("tor.bridges_title")}</span>
+    <p style="font-size:12px;color:var(--text-dim);margin:0;">{t("tor.bridges_desc")}</p>
+    <textarea bind:value={bridgesText} rows={3} disabled={busy}
+      placeholder="obfs4 1.2.3.4:443 FINGERPRINT cert=… iat-mode=0"
+      style="padding:8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:11px;resize:vertical;"></textarea>
+    <button class="btn" onclick={saveBridges} disabled={busy}>
+      {busy ? "…" : t("settings.save")}
+    </button>
 
     {#if mode === "tor_only"}
       <p style="font-size:11px;color:var(--warn,#c90);margin:0;">{t("tor.strict_note")}</p>

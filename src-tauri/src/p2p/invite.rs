@@ -32,6 +32,9 @@ const MAX_BUILD_ADDRS: usize = 4;
 pub struct ParsedInvite {
     pub peer_id: String,
     pub addrs: Vec<String>,
+    /// SEC-1111-03: one-time rendezvous secret from `?rv=` — `None` on
+    /// legacy invites (the dialer then falls back to the peer-id slot).
+    pub rv: Option<String>,
 }
 
 /// Last `/p2p/<peer>` protocol in a multiaddr, if any.
@@ -55,6 +58,21 @@ pub fn parse_invite(input: &str) -> Result<ParsedInvite, String> {
     }
 
     if let Some(body) = input.strip_prefix(INVITE_PREFIX) {
+        // SEC-1111-03: `?rv=<hex>` suffix carries the one-time rendezvous
+        // secret — the dialer's CGNAT announce lands at `H(rv)` so the
+        // inviter's public PeerId never names a Mainline-DHT slot.
+        let (body, rv) = match body.split_once("?rv=") {
+            Some((b, s)) => {
+                let secret = s.trim();
+                if secret.is_empty() || secret.len() > 64
+                    || !secret.chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    return Err("Invalid rendezvous secret in invite".into());
+                }
+                (b, Some(secret.to_string()))
+            }
+            None => (body, None),
+        };
         let (peer_part, addrs_part) = match body.split_once('@') {
             Some((p, a)) => (p.trim(), Some(a)),
             None => (body.trim(), None),
@@ -86,17 +104,18 @@ pub fn parse_invite(input: &str) -> Result<ParsedInvite, String> {
                 addrs.push(addr.to_string());
             }
         }
-        return Ok(ParsedInvite { peer_id: peer.to_string(), addrs });
+        return Ok(ParsedInvite { peer_id: peer.to_string(), addrs, rv });
     }
 
     if let Ok(peer) = input.parse::<PeerId>() {
-        return Ok(ParsedInvite { peer_id: peer.to_string(), addrs: Vec::new() });
+        return Ok(ParsedInvite { peer_id: peer.to_string(), addrs: Vec::new(), rv: None });
     }
     if let Ok(addr) = input.parse::<Multiaddr>() {
         if let Some(peer) = last_p2p_peer(&addr) {
             return Ok(ParsedInvite {
                 peer_id: peer.to_string(),
                 addrs: vec![addr.to_string()],
+                rv: None,
             });
         }
         return Err("Address must contain a /p2p/<peerId> component".into());
@@ -144,6 +163,10 @@ pub(crate) fn is_public_addr(addr: &Multiaddr) -> bool {
                 == crate::p2p::addr_class::AddrClass::PublicDirect
         }
         Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => true,
+        // Onion3 is WAN-routable via the Tor transport — it ranks with
+        // public addrs in cache sorting and invite partitioning, not with
+        // LAN hints.
+        Protocol::Onion3(_) => true,
         _ => false,
     })
 }

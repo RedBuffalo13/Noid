@@ -101,6 +101,7 @@
       busy={authStore.busy}
       minLength={8}
       showDisplay={false}
+      scramble
     />
     <div class="wizard-actions">
       {#if setupStep > 0}
@@ -151,6 +152,7 @@
       busy={authStore.busy}
       minLength={8}
       showDisplay={false}
+      scramble
     />
   </div>
 {/if}

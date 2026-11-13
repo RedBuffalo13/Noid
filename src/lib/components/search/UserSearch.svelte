@@ -46,6 +46,7 @@
         if (at >= 0) {
           const hints = input
             .slice(at + 1)
+            .split("?")[0]
             .split(",")
             .map((s) => s.trim())
             .filter((s) => s.length > 0);

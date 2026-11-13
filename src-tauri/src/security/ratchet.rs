@@ -47,6 +47,21 @@ pub struct DoubleRatchet {
     confirmed: bool,
 }
 
+impl Drop for DoubleRatchet {
+    /// SEC-1111-07: chain/root keys and skipped message keys are secret
+    /// material — zeroize on drop so a wiped/replaced session leaves no
+    /// residue in freed heap. `StaticSecret` already zeroizes itself.
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.root_key.zeroize();
+        self.send_chain_key.zeroize();
+        self.recv_chain_key.zeroize();
+        for (_, (_, k)) in self.skipped_keys.iter_mut() {
+            k.zeroize();
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RatchetHeader {
     pub dh_public: Vec<u8>,
@@ -148,8 +163,12 @@ impl DoubleRatchet {
         };
         let aad = header_aad(&header);
 
+        // META-01: pad the plaintext into a fixed bucket inside AEAD —
+        // wire observers see 256 B / 1 KB / 4 KB / 16 KB / 64 KB frames,
+        // never the true content length.
+        let framed = crate::security::frame_padding::pad_frame(plaintext);
         let ciphertext = cipher
-            .encrypt(&nonce, aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
+            .encrypt(&nonce, aes_gcm::aead::Payload { msg: &framed, aad: &aad })
             .map_err(|e| anyhow!("Encryption error: {}", e))?;
 
         self.send_n += 1;
@@ -167,7 +186,10 @@ impl DoubleRatchet {
         let mut trial = self.clone();
         let plaintext = trial.decrypt_commit(message)?;
         *self = trial;
-        Ok(plaintext)
+        // META-01: unwrap a padded frame; legacy unpadded ciphertext from
+        // pre-padding peers passes through untouched.
+        Ok(crate::security::frame_padding::unpad_frame(&plaintext)
+            .unwrap_or(plaintext))
     }
 
     fn decrypt_commit(&mut self, message: &RatchetMessage) -> Result<Vec<u8>> {

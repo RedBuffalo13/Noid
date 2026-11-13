@@ -64,6 +64,57 @@ impl P2PNode {
         if msg.id.is_empty() {
             msg.id = uuid::Uuid::new_v4().to_string();
         }
+        // META-05: a pinned 2-hop chain routes the request through
+        // [entry → exit]: entry learns only the exit, exit learns only
+        // the destination — neither sees both endpoints. The frame is
+        // also inside a second Noise leg, so relays cannot correlate by
+        // reading transport plaintext.
+        if self.relay_config.hop_relays.len() >= 2
+            && !self.relay_config.hop_relays.contains(&peer_id.to_string())
+        {
+            match serde_json::to_vec(&msg).map_err(|e| e.to_string()).and_then(|inner| {
+                crate::p2p::hop::wrap(
+                    &peer_id.to_string(),
+                    &self.relay_config.hop_relays,
+                    crate::p2p::hop::PROTO_NOID,
+                    inner,
+                )
+            }) {
+                Ok(frame) => {
+                    // Entry may be given as a multiaddr (`/ip4/…/p2p/<id>`)
+                    // or a bare PeerId — register the addr so the dial
+                    // book resolves it, or seed the known peer.
+                    let entry_str = self.relay_config.hop_relays[0].clone();
+                    let entry = if let Ok(addr) = entry_str.parse::<libp2p::Multiaddr>() {
+                        let pid = addr.iter().find_map(|p| match p {
+                            libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                            _ => None,
+                        });
+                        if let Some(id) = pid {
+                            self.register_peer_addr(id, addr, "hop_relay", true);
+                        }
+                        pid
+                    } else {
+                        entry_str.parse::<PeerId>().ok()
+                    };
+                    if let Some(entry) = entry {
+                        self.seed_peer_addrs(&entry);
+                        let request_id = self
+                            .swarm
+                            .behaviour_mut()
+                            .hop
+                            .send_request(&entry, frame);
+                        self.pending_messages
+                            .insert(request_id.to_string(), msg);
+                        self.hop_outbound_dest
+                            .insert(request_id.to_string(), peer_id.to_string());
+                        return;
+                    }
+                    log::warn!("Hop relay entry unparsable — falling back to direct send");
+                }
+                Err(e) => log::warn!("Hop wrap failed ({}) — falling back to direct send", e),
+            }
+        }
         let request_id = self.swarm
             .behaviour_mut()
             .request_response

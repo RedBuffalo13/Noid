@@ -466,7 +466,7 @@ async fn test_cold_start_via_invite() {
 
     for addr in &parsed.addrs {
         bcmd_tx
-            .send(P2PCommand::DialAddress { addr: addr.clone() })
+            .send(P2PCommand::DialAddress { addr: addr.clone(), rv: None })
             .await
             .unwrap();
     }

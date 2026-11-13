@@ -13,7 +13,7 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
     // them on two threads so the lockout gate costs one Argon2, not two.
     let pin_k = pin.clone();
     let security_arc = state.security.clone();
-    let (is_kill_pin, true_pin_ok) = tokio::task::spawn_blocking(move || {
+    let (is_kill_pin, true_pin_ok, decoy_pin_ok) = tokio::task::spawn_blocking(move || {
         let security = security_arc.blocking_lock();
         let sec = &security;
         std::thread::scope(|s| {
@@ -24,9 +24,15 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
                 Ok(v) => Ok(v),
                 Err(e) => Err(e.to_string()),
             });
+            // A1: the decoy slot runs on a third thread — wall-time is one
+            // Argon2 regardless of which verifier matches, so the login
+            // latency reveals nothing about profile choice.
+            let pd = pin_k.clone();
+            let dec = s.spawn(move || sec.verify_decoy_pin(&pd));
             let k = kill.join().unwrap_or(false);
-            let t = tru.join().unwrap_or_else(|_| Ok(false));
-            (k, t)
+            let t = tru.join().unwrap_or(Ok(false));
+            let d = dec.join().unwrap_or(None);
+            (k, t, d)
         })
     })
     .await
@@ -70,10 +76,17 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
     // kill check above — only the key derivation remains.
     // RC15: Argon2 derive runs under spawn_blocking — the security
     // guard is confined to the blocking task and never crosses other locks.
+    // A1: a true-PIN match wins over a decoy match (they can never be the
+    // same string — setup enforces it, but never trust the invariant).
+    let is_decoy_login =
+        !matches!(true_pin_ok, Ok(true)) && matches!(decoy_pin_ok, Some(true));
     let pin_d = pin.clone();
     let security_arc = state.security.clone();
     let derive_result = tokio::task::spawn_blocking(move || {
         let mut security = security_arc.blocking_lock();
+        if is_decoy_login {
+            return security.derive_decoy_key(&pin_d);
+        }
         match true_pin_ok {
             Ok(true) => security.derive_key(&pin_d),
             Ok(false) => Err(anyhow::anyhow!("Invalid PIN")),
@@ -85,10 +98,23 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
 
     match derive_result {
         Ok(_) => {
-            // Phase E: Log successful login
+            // Phase E: Log successful login — into the ACTIVE profile's
+            // audit log (decoy sessions keep their own).
+            let profile_root = if is_decoy_login {
+                let security = state.security.lock().await;
+                security.decoy_dir()
+            } else {
+                state.app_data_dir.clone()
+            };
+            state
+                .audit_log
+                .retarget(profile_root.join("audit.log"));
             let _ = state.audit_log.log_login(true);
+            state
+                .is_decoy
+                .store(is_decoy_login, std::sync::atomic::Ordering::Relaxed);
 
-            let db_path = state.app_data_dir.join("noid.db");
+            let db_path = profile_root.join("noid.db");
             // A corrupt noid.db must not wedge the app in a crash loop:
             // quarantine it (the file is kept as *.corrupt-* for manual
             // recovery) and recreate against a fresh database.
@@ -139,6 +165,9 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
             // Offline onion identity: creates/opens the encrypted keystore
             // only — no Tor sockets, no bootstrap, no descriptor. Failure is
             // non-fatal: Tor stays disabled and can retry on next login.
+            // A1: decoy sessions never touch the REAL tor keystore — the
+            // onion identity is profile-bound, so Tor stays off in decoy.
+            if !is_decoy_login {
             if let Err(e) = state.tor.ensure_identity(&master_key) {
                 log::warn!("onion identity ensure failed (Tor stays off): {}", e);
             }
@@ -159,6 +188,7 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
                     }
                 }
             }
+            }
             database
                 .attach_cipher(std::sync::Arc::new(
                     crate::security::field_cipher::FieldCipher::new(master_key),
@@ -168,6 +198,48 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
 
             let mut db_state = state.db.lock().await;
             *db_state = Some(database);
+
+            // A1/V5: auto-populate a fresh decoy profile — contacts, a room
+            // or two and mundane history — so it opens looking used, not
+            // empty. The decoy PeerId is resolved from the decoy
+            // `identity.key` (non-strict regen: a corrupt decoy key mints a
+            // fresh plausible identity; the supervisor's strict load then
+            // succeeds because the file was already rewritten).
+            if is_decoy_login {
+                let decoy_peer = {
+                    let dir = profile_root.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut regenerated = false;
+                        crate::security::key_store::load_or_regen(
+                            &dir.join("identity.key"),
+                            &master_key,
+                            || {
+                                libp2p::identity::Keypair::generate_ed25519()
+                                    .to_protobuf_encoding()
+                                    .map_err(|e| anyhow::anyhow!("keypair encode: {}", e))
+                            },
+                            |raw| libp2p::identity::Keypair::from_protobuf_encoding(raw).is_ok(),
+                            &mut regenerated,
+                        )
+                        .ok()
+                        .and_then(|b| {
+                            libp2p::identity::Keypair::from_protobuf_encoding(&b).ok()
+                        })
+                        .map(|k| k.public().to_peer_id().to_string())
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                };
+                if let (Some(db), Some(peer)) = (db_state.as_ref(), decoy_peer) {
+                    let security = state.security.lock().await;
+                    if let Err(e) =
+                        crate::security::decoy_seeder::seed_decoy_profile(db, &security, &peer).await
+                    {
+                        log::warn!("decoy seeding failed (profile stays empty): {}", e);
+                    }
+                }
+            }
 
             // Phase A.2: Initialize X3DH identity from DB (load or create)
             let mut prekey_bundle = None;
@@ -213,7 +285,8 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
                 let epoch = state.login_epoch.clone();
                 let epoch_at_login =
                     epoch.load(std::sync::atomic::Ordering::SeqCst);
-                tokio::spawn(async move {
+                // SEC-1111-09: tracked — KillPin drains it via session_tasks.
+                let h = tokio::spawn(async move {
                     for _ in 0..600 {
                         if epoch.load(std::sync::atomic::Ordering::SeqCst)
                             != epoch_at_login
@@ -235,6 +308,7 @@ pub async fn login(pin: String, app: tauri::AppHandle, state: State<'_, AppState
                     }
                     log::warn!("P2P node did not come up in 60s — prekey bundle not published");
                 });
+                state.session_tasks.lock().await.push(h);
             }
 
             // Deliver ratchet messages that arrived before login unlocked the DB
